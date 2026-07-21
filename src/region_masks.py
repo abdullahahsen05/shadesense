@@ -88,14 +88,33 @@ def build_region_masks(image_shape, landmarks) -> dict:
     mouth_top_y = float(np.min(lips_pts[:, 1])) if len(lips_pts) else h * 0.65
     mouth_bottom_y = float(np.max(lips_pts[:, 1])) if len(lips_pts) else h * 0.7
     face_center_x = float(np.mean(oval_pts[:, 0])) if len(oval_pts) else w / 2.0
+    forehead_top_y = float(landmarks[FOREHEAD_TOP_IDX][1]) if len(landmarks) > FOREHEAD_TOP_IDX else eyebrow_y - h * 0.25
+    chin_y = float(landmarks[CHIN_TIP_IDX][1]) if len(landmarks) > CHIN_TIP_IDX else mouth_bottom_y + h * 0.1
+    face_height = max(chin_y - forehead_top_y, 1.0)
+    face_width = float(np.max(oval_pts[:, 0]) - np.min(oval_pts[:, 0])) if len(oval_pts) else w * 0.5
 
     margin_h = h * 0.02
 
-    # --- Forehead: oval points above the eyebrow line, plus the eyebrow
-    # line itself as the lower boundary. ---
-    forehead_oval = oval_pts[oval_pts[:, 1] <= eyebrow_y] if len(oval_pts) else np.empty((0, 2))
-    forehead_points = np.vstack([forehead_oval, eyebrow_pts]) if len(eyebrow_pts) else forehead_oval
-    forehead_mask = _mask_from_points(forehead_points, image_shape)
+    # --- Forehead: a band anchored just above the eyebrow line, not the
+    # raw hairline landmark. The hairline/oval-top landmark sits at or
+    # behind the hair itself for people with bangs/fringes, so anchoring
+    # there risks sampling hair pixels instead of skin. A band anchored to
+    # the (much more reliable) eyebrow line, inset horizontally away from
+    # the temples/hairline sides, stays on bare forehead skin for the vast
+    # majority of hairstyles.
+    forehead_bottom_y = eyebrow_y - margin_h
+    forehead_top_y_bound = eyebrow_y - 0.32 * face_height
+    forehead_left_x = face_center_x - 0.30 * face_width
+    forehead_right_x = face_center_x + 0.30 * face_width
+    forehead_rect_pts = np.array(
+        [
+            [forehead_left_x, forehead_top_y_bound],
+            [forehead_right_x, forehead_top_y_bound],
+            [forehead_right_x, forehead_bottom_y],
+            [forehead_left_x, forehead_bottom_y],
+        ]
+    )
+    forehead_mask = _mask_from_points(forehead_rect_pts, image_shape)
 
     # --- Cheeks: oval points in the vertical band between eye line and
     # mouth-top line, split left/right by face center x, plus the nearby
