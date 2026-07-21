@@ -9,7 +9,8 @@ from PIL import Image
 
 from src.config import APP_NAME
 from src.face_detection import detect_face_landmarks
-from src.visualization import draw_face_landmarks
+from src.region_masks import build_region_masks
+from src.visualization import draw_all_region_masks, draw_face_landmarks, draw_region_mask
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
@@ -41,5 +42,26 @@ if uploaded_file is not None:
             st.subheader("Detected Face Landmarks")
             overlay = draw_face_landmarks(image_rgb, face_result.landmarks)
             st.image(overlay, caption=f"{len(face_result.landmarks)} landmarks", width=400)
+
+        masks = build_region_masks(image_rgb.shape, face_result.landmarks)
+
+        st.subheader("Skin Regions")
+        combined_overlay = draw_all_region_masks(image_rgb, masks)
+        st.image(combined_overlay, caption="Forehead / cheeks / jawline (combined)", width=450)
+
+        region_cols = st.columns(4)
+        region_labels = {
+            "forehead": "Forehead",
+            "left_cheek": "Left Cheek",
+            "right_cheek": "Right Cheek",
+            "jawline": "Jawline",
+        }
+        for col, (region_key, label) in zip(region_cols, region_labels.items()):
+            with col:
+                region_overlay = draw_region_mask(image_rgb, masks[region_key])
+                pixel_count = int((masks[region_key] > 0).sum())
+                st.image(region_overlay, caption=f"{label} ({pixel_count}px)", width=180)
+                if pixel_count == 0:
+                    st.caption("No usable pixels in this region.")
 else:
     st.info("Upload an image to see it displayed here.")
