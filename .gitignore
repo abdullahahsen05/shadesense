@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+outputs/debug/*
+!outputs/debug/.gitkeep
+.streamlit/
+*.egg-info/
+.DS_Store
+Thumbs.db

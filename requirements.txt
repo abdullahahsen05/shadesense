@@ -1,0 +1,9 @@
+streamlit
+opencv-python
+mediapipe
+numpy
+pandas
+pillow
+scikit-image
+matplotlib
+pytest

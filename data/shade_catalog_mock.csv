@@ -1,0 +1,19 @@
+shade_id,brand,shade_name,hex,r,g,b,undertone,depth,notes
+SH001,MockBeauty,Porcelain Cool,#F2D9C9,242,217,201,cool,light,Very fair skin with pink undertone
+SH002,MockBeauty,Ivory Neutral,#F0D6BE,240,214,190,neutral,light,Fair skin with balanced undertone
+SH003,MockBeauty,Vanilla Warm,#EFD3B0,239,211,176,warm,light,Fair skin with yellow/golden undertone
+SH004,MockBeauty,Nude Cool,#E6C2A6,230,194,166,cool,light-medium,Light-medium skin with pink undertone
+SH005,MockBeauty,Sand Neutral,#E3BE9C,227,190,156,neutral,light-medium,Light-medium balanced undertone
+SH006,MockBeauty,Buff Warm,#E0B78E,224,183,142,warm,light-medium,Light-medium golden undertone
+SH007,MockBeauty,Honey Neutral,#D2A379,210,163,121,neutral,medium,Medium skin with balanced undertone
+SH008,MockBeauty,Caramel Warm,#C99568,201,149,104,warm,medium,Medium skin with golden/olive undertone
+SH009,MockBeauty,Rose Beige Cool,#CB9C7A,203,156,122,cool,medium,Medium skin with pink/red undertone
+SH010,MockBeauty,Almond Warm,#B9855C,185,133,92,warm,tan,Tan skin with warm golden undertone
+SH011,MockBeauty,Toffee Neutral,#AD764C,173,118,76,neutral,tan,Tan skin with balanced undertone
+SH012,MockBeauty,Chestnut Cool,#A8734E,168,115,78,cool,tan,Tan skin with cool red undertone
+SH013,MockBeauty,Mocha Warm,#8A5A38,138,90,56,warm,deep,Deep skin with warm golden undertone
+SH014,MockBeauty,Espresso Neutral,#754A2F,117,74,47,neutral,deep,Deep skin with balanced undertone
+SH015,MockBeauty,Cocoa Cool,#6B4530,107,69,48,cool,deep,Deep skin with cool red undertone
+SH016,MockBeauty,Ebony Warm,#4A2E1D,74,46,29,warm,very-deep,Very deep skin with warm undertone
+SH017,MockBeauty,Onyx Neutral,#3E2717,62,39,23,neutral,very-deep,Very deep skin with balanced undertone
+SH018,MockBeauty,Warm Beige,#D9AE83,217,174,131,warm,medium,Medium skin leaning warm beige
