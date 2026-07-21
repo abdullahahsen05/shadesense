@@ -19,6 +19,7 @@ python -m venv .venv
 .venv\Scripts\activate      # Windows
 source .venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
+python scripts/download_model.py   # fetches MediaPipe's face_landmarker.task (~3.7MB, one-time)
 ```
 
 ## Run
