@@ -8,7 +8,9 @@ import streamlit as st
 from PIL import Image
 
 from src.color_correction import apply_mild_color_correction
+from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, SHADE_CATALOG_PATH, TOP_K_SHADES
+from src.explanation import build_explanation
 from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
 from src.shade_catalog import CatalogValidationError, load_shade_catalog
@@ -122,16 +124,28 @@ if uploaded_file is not None:
                             f"Catalog only has {len(matches)} usable shade(s); "
                             f"showing all available instead of {TOP_K_SHADES}."
                         )
+
+                    quality_report = build_quality_report(skin_result, face_result, matches)
+                    matches = compute_confidence(matches, quality_report)
+
+                    for w in quality_report.warnings:
+                        st.warning(w)
+
                     shade_cols = st.columns(len(matches))
                     for col, match in zip(shade_cols, matches):
                         with col:
                             st.image(make_skin_swatch(match.rgb), width=150)
                             st.markdown(f"**#{match.rank}: {match.shade_name}**")
                             st.caption(f"{match.brand} · {match.hex}")
+                            st.metric("Confidence", f"{match.confidence:.0%}")
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
                             if match.undertone or match.depth:
                                 st.caption(
                                     f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
                                 )
+                            explanation = build_explanation(
+                                match, skin_result, quality_report, match.rank, matches
+                            )
+                            st.caption(explanation)
 else:
     st.info("Upload an image to see it displayed here.")

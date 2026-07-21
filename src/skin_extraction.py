@@ -34,6 +34,8 @@ class SkinToneResult:
     lab: tuple
     region_results: dict
     quality_score: float
+    region_consistency: float = 0.0
+    avg_valid_pixel_ratio: float = 0.0
     warnings: list = field(default_factory=list)
     success: bool = True
 
@@ -197,6 +199,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 lab=(0.0, 0.0, 0.0),
                 region_results=region_results,
                 quality_score=0.0,
+                region_consistency=0.0,
+                avg_valid_pixel_ratio=0.0,
                 warnings=warnings,
                 success=False,
             )
@@ -230,6 +234,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         lab=final_lab,
         region_results=region_results,
         quality_score=quality_score,
+        region_consistency=consistency,
+        avg_valid_pixel_ratio=avg_valid_ratio,
         warnings=warnings,
         success=True,
     )
