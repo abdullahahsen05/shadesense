@@ -98,11 +98,24 @@ if uploaded_file is not None:
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Lab: {lab_rounded}")
             for region_name, region in skin_result.region_results.items():
-                status = "reliable" if region.reliable else "low confidence"
                 st.caption(
                     f"{region_name.replace('_', ' ').title()}: "
-                    f"{region.valid_pixel_count}/{region.total_pixel_count} valid px ({status})"
+                    f"{region.valid_pixel_count}/{region.total_pixel_count} valid px "
+                    f"({region.status_label})"
                 )
+
+        st.subheader("Regions Used for Final Estimate")
+        included_labels = [n.replace("_", " ").title() for n in skin_result.included_region_names]
+        excluded_labels = [n.replace("_", " ").title() for n in skin_result.excluded_region_names]
+        st.markdown(
+            f"**Included:** {', '.join(included_labels) if included_labels else 'None'}"
+        )
+        st.markdown(
+            f"**Excluded:** {', '.join(excluded_labels) if excluded_labels else 'None'}"
+        )
+        for region_name, region in skin_result.region_results.items():
+            if region.status_reason:
+                st.caption(f"{region_name.replace('_', ' ').title()}: {region.status_reason}")
 
         if skin_result.success:
             st.subheader("Top 3 Shade Recommendations")

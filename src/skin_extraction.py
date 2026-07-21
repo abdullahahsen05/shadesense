@@ -7,13 +7,27 @@ import numpy as np
 from skimage.color import rgb2lab
 
 REGION_NAMES = ["forehead", "left_cheek", "right_cheek", "jawline"]
+CHEEK_NAMES = ("left_cheek", "right_cheek")
+FOREHEAD_NAME = "forehead"
+JAWLINE_NAME = "jawline"
 
 LUMINANCE_LOWER_PERCENTILE = 20
 LUMINANCE_UPPER_PERCENTILE = 80
 SATURATION_UPPER_PERCENTILE = 95
 MIN_VALID_PIXELS_PER_REGION = 100
 REGION_DISAGREEMENT_THRESHOLD = 12.0  # Lab distance considered "high disagreement"
-OUTLIER_LAB_DISTANCE = 20.0  # Lab distance from consensus beyond which a region is excluded
+
+# Forehead is useful but optional: if it disagrees strongly with the cheek
+# tone (full Lab distance), it is excluded outright — likely hair/fringe or
+# shadow contamination rather than skin.
+FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
+
+# Jawline is never excluded outright, but facial hair or chin/neck shadow
+# tends to make it specifically darker (not just differently colored) than
+# the cheeks, so a lightness (L*) gap beyond this threshold reduces —
+# rather than removes — its weight in the final combination.
+JAWLINE_DARKNESS_L_THRESHOLD = 10.0
+JAWLINE_DOWNWEIGHT_FACTOR = 0.35
 
 
 @dataclass
@@ -24,8 +38,33 @@ class RegionSkinResult:
     valid_ratio: float
     median_rgb: tuple | None
     median_lab: tuple | None
-    reliable: bool
+    reliable: bool  # had enough valid pixels after filtering
+    excluded: bool = False  # excluded entirely from the final combination
+    exclusion_reason: str | None = None
+    weight_multiplier: float = 1.0  # down-weighting applied within combination (1.0 = full weight)
+    downweight_reason: str | None = None
     warnings: list = field(default_factory=list)
+
+    @property
+    def status_label(self) -> str:
+        """Human-readable status. A region can only ever be labeled
+        "reliable"/"included" XOR "excluded" — never both, so the UI can't
+        show contradictory statuses for the same region."""
+        if not self.reliable:
+            return "insufficient pixels"
+        if self.excluded:
+            return "excluded"
+        if self.weight_multiplier < 1.0:
+            return "included (reduced weight)"
+        return "included"
+
+    @property
+    def status_reason(self) -> str | None:
+        if self.excluded:
+            return self.exclusion_reason
+        if self.weight_multiplier < 1.0:
+            return self.downweight_reason
+        return None
 
 
 @dataclass
@@ -36,6 +75,8 @@ class SkinToneResult:
     quality_score: float
     region_consistency: float = 0.0
     avg_valid_pixel_ratio: float = 0.0
+    included_region_names: list = field(default_factory=list)
+    excluded_region_names: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     success: bool = True
 
@@ -115,53 +156,82 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
     )
 
 
-def _region_consistency(region_results: dict) -> float:
+def _region_consistency(regions: list) -> float:
     """Return a 0-1 consistency score based on pairwise Lab distance between
-    reliable regions' median colors. 1.0 = perfect agreement."""
-    reliable_labs = [
-        np.array(r.median_lab) for r in region_results.values() if r.reliable and r.median_lab is not None
-    ]
-    if len(reliable_labs) < 2:
-        return 1.0 if reliable_labs else 0.0
+    the given regions' median colors. 1.0 = perfect agreement. Intended to
+    be called with the regions actually used in the final combination, so
+    it reflects the agreement of what was kept, not regions already
+    excluded as contaminated."""
+    labs = [np.array(r.median_lab) for r in regions if r.median_lab is not None]
+    if len(labs) < 2:
+        return 1.0 if labs else 0.0
 
-    spread = float(np.mean(np.std(np.stack(reliable_labs), axis=0)))
+    spread = float(np.mean(np.std(np.stack(labs), axis=0)))
     return float(np.clip(1.0 - spread / REGION_DISAGREEMENT_THRESHOLD, 0.0, 1.0))
 
 
-def _exclude_outlier_regions(reliable_regions: list) -> tuple:
-    """Drop regions whose median color is a strong outlier vs. the others.
+def _lab_distance(a, b) -> float:
+    return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
-    A region that passes the valid-pixel-count check can still be
-    contaminated (e.g. a forehead band that lands on a hair fringe/bangs
-    instead of skin). When at least 3 regions agree closely, a region far
-    from that consensus is more likely contaminated than correct, so it is
-    excluded from the final color combination (never used to represent
-    skin tone), per the rule against using hair pixels as skin tone.
+
+def _cheek_anchor_lab(reliable_by_name: dict):
+    """Weighted-average Lab of whichever cheek region(s) are reliable.
+    Cheeks are the least likely regions to be contaminated by hair or
+    facial-hair shadow, so they serve as the trust anchor for judging the
+    (optional) forehead and jawline regions. Returns None if no cheek is
+    reliable."""
+    cheek_regions = [reliable_by_name[n] for n in CHEEK_NAMES if n in reliable_by_name]
+    if not cheek_regions:
+        return None
+    weights = np.array([r.valid_pixel_count for r in cheek_regions], dtype=np.float64)
+    weights = weights / weights.sum()
+    lab_stack = np.array([r.median_lab for r in cheek_regions], dtype=np.float64)
+    return np.average(lab_stack, axis=0, weights=weights)
+
+
+def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
+    """Mutate forehead/jawline RegionSkinResults in place against the cheek
+    anchor color, and return any resulting warning strings.
+
+    - Forehead: excluded outright if it disagrees strongly with the cheek
+      tone (likely hair/fringe or shadow contamination).
+    - Jawline: never excluded, but its combination weight is reduced when
+      it is specifically darker than the cheeks (possible facial hair or
+      chin/neck shadow), since a jawline that is off-color in other ways
+      may still carry useful skin-tone signal.
+
+    No-ops (returns no warnings) if no cheek region is reliable, since
+    there is then no trustworthy anchor to compare against.
     """
-    if len(reliable_regions) < 3:
-        return reliable_regions, []
+    warnings: list = []
+    anchor_lab = _cheek_anchor_lab(reliable_by_name)
+    if anchor_lab is None:
+        return warnings
 
-    labs = np.array([r.median_lab for r in reliable_regions])
-    consensus = np.median(labs, axis=0)
-    distances = np.linalg.norm(labs - consensus, axis=1)
-
-    kept = []
-    warnings = []
-    for region, dist in zip(reliable_regions, distances):
-        if dist > OUTLIER_LAB_DISTANCE:
-            warnings.append(
-                f"{region.name.replace('_', ' ').title()} color differs substantially from "
-                "other regions (possible hair, shadow, or occlusion contamination) and was "
-                "excluded from the final skin tone estimate."
+    forehead = reliable_by_name.get(FOREHEAD_NAME)
+    if forehead is not None:
+        dist = _lab_distance(forehead.median_lab, anchor_lab)
+        if dist > FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE:
+            forehead.excluded = True
+            forehead.exclusion_reason = (
+                f"Forehead color differs strongly from cheek tone (Lab distance {dist:.1f}); "
+                "likely hair/fringe or shadow contamination, so it was excluded from the "
+                "final skin tone estimate."
             )
-        else:
-            kept.append(region)
+            warnings.append(forehead.exclusion_reason)
 
-    if not kept:
-        # All regions disagreed heavily; safer to keep them all than return nothing.
-        return reliable_regions, []
+    jawline = reliable_by_name.get(JAWLINE_NAME)
+    if jawline is not None:
+        darkness_gap = anchor_lab[0] - jawline.median_lab[0]
+        if darkness_gap > JAWLINE_DARKNESS_L_THRESHOLD:
+            jawline.weight_multiplier = JAWLINE_DOWNWEIGHT_FACTOR
+            jawline.downweight_reason = (
+                f"Jawline is noticeably darker than the cheeks (L difference {darkness_gap:.1f}); "
+                "its weight in the final estimate was reduced (possible facial hair or chin shadow)."
+            )
+            warnings.append(jawline.downweight_reason)
 
-    return kept, warnings
+    return warnings
 
 
 def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
@@ -169,8 +239,13 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     For each of forehead/left_cheek/right_cheek/jawline: filters out
     shadow/highlight luminance extremes and extreme-saturation pixels, then
-    takes the median RGB/Lab. Reliable regions (enough valid pixels) are
-    combined (weighted by valid pixel count) into one final skin color.
+    takes the median RGB/Lab. Cheeks anchor the trust check: forehead is
+    excluded outright if it disagrees strongly with the cheeks (likely
+    hair/shadow contamination); jawline is down-weighted, not excluded,
+    when it is specifically darker than the cheeks (possible facial hair
+    or chin shadow). The remaining (non-excluded) reliable regions are
+    combined, weighted by valid pixel count and any down-weighting, into
+    one final skin color.
     """
     warnings: list = []
     region_results = {}
@@ -181,14 +256,18 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         region_results[name] = _extract_region(image_rgb, mask, name)
         warnings.extend(region_results[name].warnings)
 
-    reliable_regions = [r for r in region_results.values() if r.reliable]
-    reliable_regions, outlier_warnings = _exclude_outlier_regions(reliable_regions)
-    warnings.extend(outlier_warnings)
+    reliable_by_name = {name: r for name, r in region_results.items() if r.reliable}
+    warnings.extend(_apply_forehead_and_jawline_rules(reliable_by_name))
 
-    if not reliable_regions:
-        # Fall back to any region with at least some valid pixels so the app
-        # can still show a (low-confidence) result instead of failing outright.
-        fallback_regions = [r for r in region_results.values() if r.median_rgb is not None]
+    combination_regions = [r for r in reliable_by_name.values() if not r.excluded]
+
+    if not combination_regions:
+        # Fall back to any region with at least some valid pixels (and not
+        # explicitly excluded) so the app can still show a (low-confidence)
+        # result instead of failing outright.
+        fallback_regions = [
+            r for r in region_results.values() if r.median_rgb is not None and not r.excluded
+        ]
         if not fallback_regions:
             warnings.append(
                 "Could not extract a reliable skin color from any region. "
@@ -201,6 +280,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 quality_score=0.0,
                 region_consistency=0.0,
                 avg_valid_pixel_ratio=0.0,
+                included_region_names=[],
+                excluded_region_names=[n for n, r in region_results.items() if r.excluded],
                 warnings=warnings,
                 success=False,
             )
@@ -208,18 +289,20 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
             "No region met the minimum valid-pixel threshold; using best-available regions "
             "with reduced confidence."
         )
-        reliable_regions = fallback_regions
+        combination_regions = fallback_regions
 
-    weights = np.array([r.valid_pixel_count for r in reliable_regions], dtype=np.float64)
+    weights = np.array(
+        [r.valid_pixel_count * r.weight_multiplier for r in combination_regions], dtype=np.float64
+    )
     weights = weights / weights.sum()
 
-    rgb_stack = np.array([r.median_rgb for r in reliable_regions], dtype=np.float64)
-    lab_stack = np.array([r.median_lab for r in reliable_regions], dtype=np.float64)
+    rgb_stack = np.array([r.median_rgb for r in combination_regions], dtype=np.float64)
+    lab_stack = np.array([r.median_lab for r in combination_regions], dtype=np.float64)
 
     final_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
     final_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
 
-    consistency = _region_consistency(region_results)
+    consistency = _region_consistency(combination_regions)
     avg_valid_ratio = float(np.mean([r.valid_ratio for r in region_results.values()])) if region_results else 0.0
 
     if consistency < 0.5:
@@ -229,6 +312,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     quality_score = float(np.clip(0.5 * consistency + 0.5 * avg_valid_ratio, 0.0, 1.0))
 
+    included_region_names = [r.name for r in combination_regions]
+    excluded_region_names = [name for name, r in region_results.items() if r.excluded]
+
     return SkinToneResult(
         rgb=final_rgb,
         lab=final_lab,
@@ -236,6 +322,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         quality_score=quality_score,
         region_consistency=consistency,
         avg_valid_pixel_ratio=avg_valid_ratio,
+        included_region_names=included_region_names,
+        excluded_region_names=excluded_region_names,
         warnings=warnings,
         success=True,
     )

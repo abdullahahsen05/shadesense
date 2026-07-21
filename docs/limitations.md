@@ -18,13 +18,17 @@
   per-region polygons, so they generalize reasonably across face shapes and
   poses but are not pixel-perfect for every hairstyle or face angle.
 - Heavy bangs/fringes covering the forehead can still bias the forehead
-  region toward hair color. An outlier-region safeguard in
-  `src/skin_extraction.py` detects and excludes a region whose color
-  disagrees strongly with the others (requires at least 3 usable regions),
-  which mitigates but does not eliminate this failure mode — with only 2
-  usable regions it cannot reliably distinguish "hair" from "skin."
-- No explicit handling for glasses, heavy occlusion, or facial hair beyond
-  what the region geometry and outlier-region logic naturally avoid.
+  region toward hair color. `src/skin_extraction.py` treats the cheeks as
+  the trust anchor (least likely to be occluded by hair or facial-hair
+  shadow): forehead is excluded outright when it disagrees strongly with
+  the cheek tone (likely hair/fringe or shadow), and jawline is
+  down-weighted (not excluded) when it is specifically darker than the
+  cheeks (possible facial hair or chin shadow). This requires at least one
+  reliable cheek region to act as the anchor — with neither cheek usable,
+  these checks are skipped entirely (no anchor to compare against).
+- No explicit handling for glasses or heavy occlusion beyond what the
+  region geometry and the forehead/jawline trust-anchor logic naturally
+  mitigate.
 
 ## Skin tone extraction
 - Uses percentile-based luminance/saturation filtering rather than a full
