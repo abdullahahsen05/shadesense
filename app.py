@@ -8,9 +8,11 @@ import streamlit as st
 from PIL import Image
 
 from src.color_correction import apply_mild_color_correction
-from src.config import APP_NAME
+from src.config import APP_NAME, SHADE_CATALOG_PATH, TOP_K_SHADES
 from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
+from src.shade_catalog import CatalogValidationError, load_shade_catalog
+from src.shade_matcher import match_shades
 from src.skin_extraction import extract_skin_tone
 from src.visualization import (
     draw_all_region_masks,
@@ -99,5 +101,37 @@ if uploaded_file is not None:
                     f"{region_name.replace('_', ' ').title()}: "
                     f"{region.valid_pixel_count}/{region.total_pixel_count} valid px ({status})"
                 )
+
+        if skin_result.success:
+            st.subheader("Top 3 Shade Recommendations")
+            try:
+                catalog_df = load_shade_catalog(str(SHADE_CATALOG_PATH))
+            except (FileNotFoundError, CatalogValidationError) as exc:
+                st.error(f"Shade catalog error: {exc}")
+            else:
+                for w in catalog_df.attrs.get("warnings", []):
+                    st.warning(w)
+
+                matches = match_shades(np.array(skin_result.lab), catalog_df, top_k=TOP_K_SHADES)
+
+                if not matches:
+                    st.error("No shades available to recommend.")
+                else:
+                    if len(matches) < TOP_K_SHADES:
+                        st.warning(
+                            f"Catalog only has {len(matches)} usable shade(s); "
+                            f"showing all available instead of {TOP_K_SHADES}."
+                        )
+                    shade_cols = st.columns(len(matches))
+                    for col, match in zip(shade_cols, matches):
+                        with col:
+                            st.image(make_skin_swatch(match.rgb), width=150)
+                            st.markdown(f"**#{match.rank}: {match.shade_name}**")
+                            st.caption(f"{match.brand} · {match.hex}")
+                            st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
+                            if match.undertone or match.depth:
+                                st.caption(
+                                    f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
+                                )
 else:
     st.info("Upload an image to see it displayed here.")
