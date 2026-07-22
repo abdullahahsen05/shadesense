@@ -70,6 +70,11 @@ st.caption(
 st.warning(PUBLIC_CATALOG_LIMITATION)
 st.caption("Local AI foundation shade recommender — upload a facial photo to begin.")
 
+st.info(
+    "For best results: use soft daylight, face camera directly, avoid filters, "
+    "remove sunglasses/hats where possible, and keep cheeks and jawline visible."
+)
+
 uploaded_file = st.file_uploader(
     "Upload a facial image", type=["jpg", "jpeg", "png", "bmp"]
 )

@@ -23,3 +23,20 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Valid pixels:" in page_text
     assert "Reliability score:" in page_text
     assert "Shadow/highlight ratio:" in page_text
+
+
+def test_capture_guidance_text_exists():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=30)
+
+    page_text = "\n".join(
+        [
+            getattr(item, "value", "")
+            for group in [at.info, at.caption, at.markdown]
+            for item in group
+        ]
+    )
+    assert "For best results" in page_text
+    assert "soft daylight" in page_text
+    assert "face camera directly" in page_text
+    assert "cheeks and jawline visible" in page_text
