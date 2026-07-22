@@ -17,14 +17,33 @@ def _reliability_label(score: float) -> str:
 
 def build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection) -> str:
     """Return a compact, demo-friendly explanation of extraction reliability."""
-    included = _format_region_list(getattr(skin_result, "included_region_names", []))
+    included_names = getattr(skin_result, "included_region_names", [])
+    included = _format_region_list(included_names)
     excluded = _format_region_list(getattr(skin_result, "excluded_region_names", []))
     reduced = [
         name
         for name, region in skin_result.region_results.items()
-        if not region.excluded and region.weight_multiplier < 1.0
+        if not region.excluded and (region.weight_multiplier < 1.0 or getattr(region, "role", "") == "reduced")
     ]
     reduced_text = _format_region_list(reduced)
+    trusted = [
+        name
+        for name, region in skin_result.region_results.items()
+        if getattr(region, "role", "") == "trusted"
+    ]
+    if not trusted:
+        trusted = [
+            name
+            for name in included_names
+            if name in ("left_cheek", "right_cheek")
+        ] or list(included_names)
+    supporting = [
+        name
+        for name, region in skin_result.region_results.items()
+        if getattr(region, "role", "") == "supporting"
+    ]
+    trusted_text = _format_region_list(trusted)
+    supporting_text = _format_region_list(supporting)
 
     highlight_regions = [
         name
@@ -54,6 +73,8 @@ def build_skin_extraction_summary(skin_result, lighting_quality, extraction_sele
     return (
         f"Extraction reliability: {reliability}. "
         f"Trusted regions used: {included}. "
+        f"Highest-trust regions: {trusted_text}. "
+        f"Supporting regions: {supporting_text}. "
         f"Excluded regions: {excluded}. "
         f"Reduced-weight regions: {reduced_text}. "
         f"{lighting_text} {highlight_text} "

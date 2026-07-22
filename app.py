@@ -225,6 +225,31 @@ if uploaded_file is not None:
         st.subheader("Skin Extraction Summary")
         st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
 
+        with st.expander("Per-Region Quality"):
+            st.caption("Per-Region Quality")
+            region_order = ["left_cheek", "right_cheek", "forehead", "jawline"]
+            quality_rows = []
+            for region_name in region_order:
+                region = skin_result.region_results.get(region_name)
+                if region is None:
+                    continue
+                reason_text = " ".join(region.quality_reasons[:2]) if region.quality_reasons else region.status_reason or "No additional caveats."
+                warning_text = " ".join(region.quality_warnings[:2]) if region.quality_warnings else "None"
+                quality_rows.append(
+                    {
+                        "Region": region_name.replace("_", " ").title(),
+                        "Score": f"{region.quality_score:.0f}/100",
+                        "Label": region.quality_label,
+                        "Role": region.role,
+                        "Reason": reason_text,
+                        "Warnings": warning_text,
+                    }
+                )
+            if quality_rows:
+                st.table(quality_rows)
+            else:
+                st.caption("No per-region quality diagnostics available.")
+
         with st.expander("Color Correction Diagnostics"):
             st.caption("Color Correction Diagnostics")
             st.caption(f"Selected extraction source: {extraction_selection.selected_source}")
@@ -260,6 +285,9 @@ if uploaded_file is not None:
                         st.caption(f"RGB: {region.median_rgb}")
                         st.caption(f"Lab: {region_lab}")
                         st.caption(f"Status: {region.status_label}")
+                        st.caption(f"Quality score: {region.quality_score:.0f}/100")
+                        st.caption(f"Quality label: {region.quality_label}")
+                        st.caption(f"Role: {region.role}")
                         st.caption(f"Reliability score: {region.reliability_score:.0%}")
                         st.caption(f"Stable patches: {region.stable_patch_count}")
                         st.caption(f"Mid-tone patches used: {region.midtone_patch_count}")

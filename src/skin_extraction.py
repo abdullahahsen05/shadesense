@@ -82,6 +82,11 @@ class RegionSkinResult:
     highlight_patches_rejected: int = 0
     shadow_patches_rejected: int = 0
     midtone_patch_count: int = 0
+    quality_score: float = 0.0
+    quality_label: str = "excluded"
+    role: str = "excluded"
+    quality_reasons: list = field(default_factory=list)
+    quality_warnings: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
 
     @property
@@ -569,6 +574,122 @@ def _jawline_has_contamination_concern(jawline: RegionSkinResult) -> bool:
     )
 
 
+def _region_quality_label(score: float, excluded: bool = False) -> str:
+    if excluded:
+        return "excluded"
+    if score >= 85:
+        return "excellent"
+    if score >= 70:
+        return "good"
+    if score >= 50:
+        return "fair"
+    return "poor"
+
+
+def _region_role(region: RegionSkinResult, score: float) -> str:
+    if region.excluded or not region.reliable or region.median_lab is None:
+        return "excluded"
+    if region.weight_multiplier < 1.0 or score < 55:
+        return "reduced"
+    if region.name in CHEEK_NAMES:
+        return "trusted"
+    return "supporting"
+
+
+def _assign_region_quality(region_results: dict, reliable_by_name: dict) -> None:
+    """Populate demo-facing per-region quality fields from existing extraction
+    diagnostics. This is an interpretation layer only; it does not decide
+    shade matching by itself.
+    """
+    anchor_lab = _cheek_anchor_lab(reliable_by_name)
+    for region in region_results.values():
+        reasons: list[str] = []
+        quality_warnings: list[str] = []
+
+        if not region.reliable or region.median_lab is None:
+            score = min(region.valid_ratio * 40.0, 35.0)
+            if region.total_pixel_count == 0:
+                reasons.append("Region mask had no usable area.")
+            else:
+                reasons.append(
+                    f"Only {region.valid_pixel_count}/{region.total_pixel_count} pixels survived skin filtering."
+                )
+            quality_warnings.extend(region.warnings)
+        else:
+            stable_patch_score = min(region.stable_patch_count / max(MIN_STABLE_PATCHES_PER_REGION, 1), 1.0)
+            midtone_patch_score = min(region.midtone_patch_count / max(MIN_STABLE_PATCHES_PER_REGION, 1), 1.0)
+            variance_score = float(np.clip(1.0 - region.lab_std / max(MAX_PATCH_LAB_STD, 1.0), 0.0, 1.0))
+            usable_area_score = min(region.valid_pixel_count / max(MIN_VALID_PIXELS_PER_REGION * 2, 1), 1.0)
+            shadow_highlight_score = float(np.clip(1.0 - region.shadow_highlight_ratio, 0.0, 1.0))
+            patch_rejection_total = region.highlight_patches_rejected + region.shadow_patches_rejected
+            patch_rejection_ratio = patch_rejection_total / max(
+                patch_rejection_total + region.stable_patch_count + region.midtone_patch_count,
+                1,
+            )
+            patch_rejection_score = float(np.clip(1.0 - patch_rejection_ratio, 0.0, 1.0))
+
+            score = 100.0 * (
+                0.28 * region.valid_ratio
+                + 0.18 * stable_patch_score
+                + 0.14 * midtone_patch_score
+                + 0.16 * variance_score
+                + 0.10 * usable_area_score
+                + 0.08 * shadow_highlight_score
+                + 0.06 * patch_rejection_score
+            )
+
+            if region.weight_multiplier < 1.0:
+                score -= 14.0
+                if region.downweight_reason:
+                    quality_warnings.append(region.downweight_reason)
+            if region.excluded:
+                score = min(score, 30.0)
+                if region.exclusion_reason:
+                    quality_warnings.append(region.exclusion_reason)
+            if region.specular_highlight_detected:
+                score -= 8.0
+                quality_warnings.append("Possible specular highlight influence detected.")
+            if region.makeup_influence_detected:
+                score -= 7.0
+                quality_warnings.append("Possible makeup/highlight influence detected.")
+            if region.shadow_highlight_ratio > 0.25:
+                score -= 6.0
+                quality_warnings.append("Elevated shadow/highlight rejection ratio.")
+            if region.highlight_patches_rejected > 0:
+                quality_warnings.append(f"{region.highlight_patches_rejected} highlight patch(es) rejected.")
+            if region.shadow_patches_rejected > 0:
+                quality_warnings.append(f"{region.shadow_patches_rejected} shadow patch(es) rejected.")
+
+            reasons.append(f"Valid skin pixel ratio {region.valid_ratio:.0%}.")
+            if region.stable_patch_count > 0:
+                reasons.append(
+                    f"{region.stable_patch_count} stable patch(es), {region.midtone_patch_count} mid-tone patch(es)."
+                )
+            elif region.patch_fallback_used:
+                reasons.append("Used full-region median fallback because too few stable patches survived.")
+            reasons.append(f"Local Lab variance {region.lab_std:.1f}.")
+            if anchor_lab is not None and region.name not in CHEEK_NAMES:
+                dist = _lab_distance(region.median_lab, anchor_lab)
+                reasons.append(f"Distance from cheek anchor {dist:.1f} Delta E.")
+            if region.name in CHEEK_NAMES:
+                reasons.append("Primary cheek region for undertone and shade matching.")
+            elif region.name == JAWLINE_NAME:
+                if region.weight_multiplier >= 0.75 and not region.excluded:
+                    reasons.append("Jawline/lower-cheek area supports shade depth when clean.")
+                else:
+                    reasons.append("Jawline is reduced only because contamination signals were present.")
+            elif region.name == FOREHEAD_NAME:
+                reasons.append("Forehead is treated as supporting evidence when reliable.")
+
+        score = float(np.clip(score, 0.0, 100.0))
+        role = _region_role(region, score)
+        region.quality_score = score
+        region.quality_label = _region_quality_label(score, role == "excluded")
+        region.role = role
+        region.quality_reasons = reasons
+        region.quality_warnings = list(dict.fromkeys(quality_warnings))
+
+
 def _region_base_weight(region_name: str) -> float:
     if region_name in CHEEK_NAMES:
         return 1.0
@@ -680,6 +801,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     cheek_area_balance, cheek_area_warning = _cheek_area_balance(region_results)
     if cheek_area_warning:
         warnings.append(cheek_area_warning)
+    _assign_region_quality(region_results, reliable_by_name)
 
     combination_regions = [r for r in reliable_by_name.values() if not r.excluded]
 

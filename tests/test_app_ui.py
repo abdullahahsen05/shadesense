@@ -52,6 +52,10 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Skin Extraction Summary" in page_text
     assert "Extraction reliability:" in page_text
     assert "Trusted regions used:" in page_text
+    assert "Per-Region Quality" in page_text
+    assert "Quality score:" in page_text
+    assert "Quality label:" in page_text
+    assert "Role:" in page_text
     assert "Image Capture Quality" in page_text
     assert "Label:" in page_text
     assert "Blur metric" in page_text

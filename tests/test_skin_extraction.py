@@ -125,6 +125,9 @@ def test_forehead_excluded_when_it_disagrees_strongly_with_cheeks():
     forehead = skin.region_results["forehead"]
     assert forehead.excluded is True
     assert forehead.exclusion_reason is not None
+    assert forehead.role == "excluded"
+    assert forehead.quality_label == "excluded"
+    assert 0.0 <= forehead.quality_score <= 100.0
     assert "forehead" not in [n.lower() for n in skin.included_region_names]
     assert "forehead" in skin.excluded_region_names
 
@@ -157,6 +160,8 @@ def test_jawline_not_downweighted_when_darker_but_clean_and_stable():
     assert jawline.excluded is False
     assert jawline.weight_multiplier >= 0.75
     assert jawline.downweight_reason is None
+    assert jawline.role == "supporting"
+    assert jawline.quality_label != "excluded"
     assert "jawline" in skin.included_region_names
 
 
@@ -200,9 +205,43 @@ def test_jawline_downweighted_when_contains_shadow_patches():
 
     jawline = skin.region_results["jawline"]
     assert jawline.weight_multiplier < 1.0
+    assert jawline.role == "reduced"
     assert jawline.downweight_reason is not None
     assert "chin/neck shadow, contour, occlusion, or uneven lighting" in jawline.downweight_reason
     assert "facial hair" not in jawline.downweight_reason.lower()
+
+
+def test_clean_cheek_region_quality_beats_highlight_contaminated_cheek():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    image[30:50, 50:76] = (245, 242, 235)
+
+    skin = extract_skin_tone(image, masks)
+    left = skin.region_results["left_cheek"]
+    right = skin.region_results["right_cheek"]
+
+    assert left.quality_score > right.quality_score
+    assert right.highlight_patches_rejected > 0 or right.specular_highlight_detected
+    assert any("highlight" in warning.lower() for warning in right.quality_warnings)
+
+
+def test_region_quality_scores_stay_in_zero_to_one_hundred_range():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    skin = extract_skin_tone(image, masks)
+
+    for region in skin.region_results.values():
+        assert 0.0 <= region.quality_score <= 100.0
+        assert region.quality_label in {"excellent", "good", "fair", "poor", "excluded"}
+        assert region.role in {"trusted", "supporting", "reduced", "excluded"}
 
 
 def test_asymmetric_cheek_valid_area_warns_without_excluding_cheeks():
@@ -389,6 +428,8 @@ def test_region_reliability_score_reflects_patch_and_valid_pixel_quality():
     left = skin.region_results["left_cheek"]
     assert 0.0 <= left.reliability_score <= 1.0
     assert left.reliability_score > 0.6
+    assert left.role == "trusted"
+    assert left.quality_score > 60
     assert any("reliability score" in r.lower() for r in skin.extraction_quality_reasons)
 
 
