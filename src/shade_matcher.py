@@ -54,6 +54,10 @@ TOO_LIGHT_CLOSE_PENALTY = 0.08
 TOO_LIGHT_MAX_PENALTY = 0.55
 VARIANT_DELTA_E_WINDOW = 1.5
 VARIANT_HEX_RGB_DISTANCE = 10.0
+NEAR_DUPLICATE_DELTA_E = 1.2
+DISPLAY_MIN_DELTA_E_STEPS = (1.8, 1.2, 0.6, 0.0)
+MIN_DEDUP_SCAN_ROWS = 1000
+DEDUP_SCAN_MULTIPLIER = 500
 
 
 def _normalize_key_text(value) -> str:
@@ -66,6 +70,10 @@ def _rgb_distance(a: tuple, b: tuple) -> float:
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
 
+def _lab_delta_e(a: tuple, b: tuple) -> float:
+    return float(_compute_delta_e(np.array(a, dtype=np.float64), np.array([b], dtype=np.float64))[0])
+
+
 def _shade_names_similar(a, b) -> bool:
     a_norm = _normalize_key_text(a)
     b_norm = _normalize_key_text(b)
@@ -74,9 +82,7 @@ def _shade_names_similar(a, b) -> bool:
     if a_norm == b_norm:
         return True
 
-    a_tokens = set(a_norm.split())
-    b_tokens = set(b_norm.split())
-    if a_tokens and b_tokens and len(a_tokens & b_tokens) / max(len(a_tokens | b_tokens), 1) >= 0.5:
+    if len(a_norm) >= 4 and len(b_norm) >= 4 and (a_norm in b_norm or b_norm in a_norm):
         return True
 
     a_digits = set(re.findall(r"\d+", a_norm))
@@ -146,9 +152,14 @@ def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, ran
 def _is_same_shade_candidate(candidate: ShadeMatch, existing: ShadeMatch) -> bool:
     if _normalize_key_text(candidate.brand) != _normalize_key_text(existing.brand):
         return False
-    same_product = _normalize_key_text(candidate.product) == _normalize_key_text(existing.product)
+    candidate_product = _normalize_key_text(candidate.product)
+    existing_product = _normalize_key_text(existing.product)
+    same_product = bool(candidate_product and existing_product and candidate_product == existing_product)
     similar_shade_name = _shade_names_similar(candidate.shade_name, existing.shade_name)
+
     if same_product and similar_shade_name and candidate.hex == existing.hex:
+        return True
+    if same_product and _lab_delta_e(candidate.lab, existing.lab) <= NEAR_DUPLICATE_DELTA_E:
         return True
     if same_product and similar_shade_name and _rgb_distance(candidate.rgb, existing.rgb) <= VARIANT_HEX_RGB_DISTANCE:
         return True
@@ -202,6 +213,48 @@ def _add_variant(primary: ShadeMatch, variant: ShadeMatch) -> None:
     primary.product_variants.append(_variant_payload(variant))
 
 
+def _group_ranked_candidates(candidates: list[ShadeMatch]) -> list[ShadeMatch]:
+    grouped_matches = []
+    for candidate in candidates:
+        grouped = False
+        for existing in grouped_matches:
+            if _is_same_shade_candidate(candidate, existing):
+                _add_variant(existing, candidate)
+                grouped = True
+                break
+        if not grouped:
+            grouped_matches.append(candidate)
+    return grouped_matches
+
+
+def _select_visually_distinct_matches(candidates: list[ShadeMatch], top_k: int) -> list[ShadeMatch]:
+    if top_k <= 0:
+        return []
+    if len(candidates) <= top_k:
+        selected = candidates[:top_k]
+    else:
+        selected = []
+        for threshold in DISPLAY_MIN_DELTA_E_STEPS:
+            selected = []
+            for candidate in candidates:
+                if all(_lab_delta_e(candidate.lab, existing.lab) >= threshold for existing in selected):
+                    selected.append(candidate)
+                if len(selected) >= top_k:
+                    break
+            if len(selected) >= top_k:
+                break
+        if len(selected) < top_k:
+            for candidate in candidates:
+                if candidate not in selected:
+                    selected.append(candidate)
+                if len(selected) >= top_k:
+                    break
+
+    for rank, match in enumerate(selected, start=1):
+        match.rank = rank
+    return selected
+
+
 def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
     """Rank catalog shades by perceptual distance to the extracted skin color.
 
@@ -225,20 +278,12 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
 
     order = np.lexsort((distances, ranking_scores))
 
-    matches = []
-    for idx in order:
+    dedup_scan_limit = min(len(order), max(MIN_DEDUP_SCAN_ROWS, top_k * DEDUP_SCAN_MULTIPLIER))
+    ranked_candidates = []
+    for idx in order[:dedup_scan_limit]:
         row = catalog_df.iloc[idx]
         candidate = _row_to_match(row, idx, distances, ranking_scores, estimated_depth)
-        grouped = False
-        for existing in matches:
-            if _is_same_shade_candidate(candidate, existing):
-                _add_variant(existing, candidate)
-                grouped = True
-                break
-        if grouped:
-            continue
-        candidate.rank = len(matches) + 1
-        matches.append(candidate)
-        if len(matches) >= top_k:
-            break
-    return matches
+        ranked_candidates.append(candidate)
+
+    grouped_candidates = _group_ranked_candidates(ranked_candidates)
+    return _select_visually_distinct_matches(grouped_candidates, top_k)

@@ -244,6 +244,76 @@ def test_same_brand_product_nearly_identical_hex_similar_shade_names_grouped():
     assert [variant["shade_name"] for variant in matches[0].product_variants] == ["450 Neutral"]
 
 
+def test_same_brand_product_same_hex_slightly_different_shade_name_grouped():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "A2", "B1"],
+            "brand": ["Brand A", "Brand A", "Brand B"],
+            "product": ["Liquid Base", "Liquid Base", "Liquid Base"],
+            "shade_name": ["450 C", "450 Cool", "451 Cool"],
+            "hex": ["#4F3B32", "#4F3B32", "#554037"],
+            "r": [79, 79, 85],
+            "g": [59, 59, 64],
+            "b": [50, 50, 55],
+            "lab_l": [27.0, 27.0, 29.5],
+            "lab_a": [6.0, 6.0, 6.5],
+            "lab_b": [9.0, 9.0, 9.5],
+        }
+    )
+
+    matches = match_shades(np.array([27.0, 6.0, 9.0]), df, top_k=3)
+
+    assert len(matches) == 2
+    assert matches[0].shade_name == "450 C"
+    assert [variant["shade_name"] for variant in matches[0].product_variants] == ["450 Cool"]
+
+
+def test_visual_distinctness_skips_nearly_identical_display_candidate_when_possible():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "B1", "C1", "D1"],
+            "brand": ["Brand A", "Brand B", "Brand C", "Brand D"],
+            "product": ["Base", "Base", "Base", "Base"],
+            "shade_name": ["One", "Twin", "Two", "Three"],
+            "hex": ["#4F3B32", "#4F3B32", "#60483C", "#735648"],
+            "r": [79, 79, 96, 115],
+            "g": [59, 59, 72, 86],
+            "b": [50, 50, 60, 72],
+            "lab_l": [27.0, 27.0, 32.0, 38.0],
+            "lab_a": [6.0, 6.0, 7.0, 8.0],
+            "lab_b": [9.0, 9.0, 10.0, 12.0],
+        }
+    )
+
+    matches = match_shades(np.array([27.0, 6.0, 9.0]), df, top_k=3)
+
+    assert len(matches) == 3
+    assert [m.brand for m in matches] == ["Brand A", "Brand C", "Brand D"]
+
+
+def test_different_brands_same_hex_preserved_when_needed_for_top_k():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "B1"],
+            "brand": ["Brand A", "Brand B"],
+            "product": ["Base", "Base"],
+            "shade_name": ["One", "Twin"],
+            "hex": ["#4F3B32", "#4F3B32"],
+            "r": [79, 79],
+            "g": [59, 59],
+            "b": [50, 50],
+            "lab_l": [27.0, 27.0],
+            "lab_a": [6.0, 6.0],
+            "lab_b": [9.0, 9.0],
+        }
+    )
+
+    matches = match_shades(np.array([27.0, 6.0, 9.0]), df, top_k=2)
+
+    assert len(matches) == 2
+    assert {m.brand for m in matches} == {"Brand A", "Brand B"}
+
+
 def test_top_three_returns_distinct_candidates_when_enough_unique_shades_exist():
     df = pd.DataFrame(
         {
