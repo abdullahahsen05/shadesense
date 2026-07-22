@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
-from skimage.color import rgb2lab
+from skimage.color import lab2rgb, rgb2lab
 
 from src.depth_diagnostics import build_skin_depth_diagnostic
 
@@ -72,6 +72,10 @@ class RegionSkinResult:
     weight_multiplier: float = 1.0  # down-weighting applied within combination (1.0 = full weight)
     downweight_reason: str | None = None
     stable_patch_count: int = 0
+    stable_patch_rgbs: list = field(default_factory=list)
+    stable_patch_labs: list = field(default_factory=list)
+    stable_patch_quality_scores: list = field(default_factory=list)
+    stable_patch_midtone_flags: list = field(default_factory=list)
     patch_fallback_used: bool = False
     lab_std: float = 0.0
     rgb_std: float = 0.0
@@ -124,6 +128,7 @@ class SkinToneResult:
     included_region_names: list = field(default_factory=list)
     excluded_region_names: list = field(default_factory=list)
     extraction_quality_reasons: list = field(default_factory=list)
+    patch_voting_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None
@@ -198,6 +203,8 @@ def _stable_patch_medians(
         "highlight_patches_rejected": 0,
         "shadow_patches_rejected": 0,
         "midtone_patch_count": 0,
+        "selected_patch_quality_scores": [],
+        "selected_midtone_flags": [],
     }
     if len(xs) == 0:
         return np.empty((0, 3)), np.empty((0, 3)), 0, stats
@@ -229,6 +236,7 @@ def _stable_patch_medians(
             if lab_std > MAX_PATCH_LAB_STD or rgb_std > MAX_PATCH_RGB_STD:
                 continue
             luminance_mid_penalty = 0.0
+            is_midtone = False
             if region_luminance_bounds is not None:
                 if len(region_luminance_bounds) >= 4:
                     low_l, high_l, mid_low_l, mid_high_l = region_luminance_bounds[:4]
@@ -255,16 +263,30 @@ def _stable_patch_medians(
                     continue
                 if mid_low_l <= patch_l_median <= mid_high_l:
                     stats["midtone_patch_count"] += 1
+                    is_midtone = True
                 else:
                     mid_center = (mid_low_l + mid_high_l) / 2.0
                     mid_width = max(mid_high_l - mid_low_l, 1.0)
                     luminance_mid_penalty = abs(patch_l_median - mid_center) / mid_width
 
+            patch_quality = float(
+                np.clip(
+                    1.0
+                    - 0.45 * min(lab_std / max(MAX_PATCH_LAB_STD, 1.0), 1.0)
+                    - 0.25 * min(rgb_std / max(MAX_PATCH_RGB_STD, 1.0), 1.0)
+                    - 0.20 * min(luminance_mid_penalty, 1.0)
+                    + (0.10 if is_midtone else 0.0),
+                    0.05,
+                    1.0,
+                )
+            )
             stable.append(
                 (
                     lab_std + rgb_std / 10.0 + luminance_mid_penalty,
                     np.median(valid_rgb, axis=0),
                     np.median(valid_lab, axis=0),
+                    patch_quality,
+                    is_midtone,
                 )
             )
 
@@ -275,6 +297,8 @@ def _stable_patch_medians(
     selected = stable[:MAX_STABLE_PATCHES_PER_REGION]
     rgb_medians = np.stack([item[1] for item in selected])
     lab_medians = np.stack([item[2] for item in selected])
+    stats["selected_patch_quality_scores"] = [item[3] for item in selected]
+    stats["selected_midtone_flags"] = [item[4] for item in selected]
     return rgb_medians, lab_medians, len(selected), stats
 
 
@@ -389,6 +413,10 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         median_lab=median_lab,
         reliable=valid_count >= MIN_VALID_PIXELS_PER_REGION,
         stable_patch_count=stable_patch_count if not patch_fallback_used else 0,
+        stable_patch_rgbs=[tuple(np.round(rgb).astype(int).tolist()) for rgb in patch_rgb] if not patch_fallback_used else [],
+        stable_patch_labs=[tuple(lab.astype(float).tolist()) for lab in patch_lab] if not patch_fallback_used else [],
+        stable_patch_quality_scores=patch_stats["selected_patch_quality_scores"] if not patch_fallback_used else [],
+        stable_patch_midtone_flags=patch_stats["selected_midtone_flags"] if not patch_fallback_used else [],
         patch_fallback_used=patch_fallback_used,
         lab_std=lab_std,
         rgb_std=rgb_std,
@@ -698,6 +726,149 @@ def _region_base_weight(region_name: str) -> float:
     return OPTIONAL_REGION_BASE_WEIGHT
 
 
+def _lab_to_rgb_tuple(lab: np.ndarray | tuple | list) -> tuple:
+    lab_array = np.asarray(lab, dtype=np.float64).reshape(1, 1, 3)
+    _assert_skimage_lab_scale(lab_array.reshape(1, 3))
+    rgb = lab2rgb(lab_array).reshape(3)
+    return tuple(np.round(np.clip(rgb * 255.0, 0, 255)).astype(int).tolist())
+
+
+def _region_patch_role_weight(region: RegionSkinResult) -> float:
+    if region.name in CHEEK_NAMES and region.role == "trusted":
+        return 1.2
+    if region.name == JAWLINE_NAME and region.role == "supporting":
+        return 0.9
+    if region.name == FOREHEAD_NAME:
+        return 0.65
+    if region.role == "reduced":
+        return 0.55
+    return 1.0
+
+
+def _weighted_lab_mean(labs: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.sum() <= 0:
+        weights = np.ones(len(labs), dtype=np.float64)
+    weights = weights / weights.sum()
+    return np.average(labs, axis=0, weights=weights)
+
+
+def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None, tuple | None, dict]:
+    candidates: list[dict] = []
+    highlight_rejected = 0
+    shadow_rejected = 0
+    midtone_total = 0
+    for region in combination_regions:
+        highlight_rejected += region.highlight_patches_rejected
+        shadow_rejected += region.shadow_patches_rejected
+        midtone_total += region.midtone_patch_count
+        for rgb, lab, patch_quality, is_midtone in zip(
+            region.stable_patch_rgbs,
+            region.stable_patch_labs,
+            region.stable_patch_quality_scores,
+            region.stable_patch_midtone_flags,
+        ):
+            region_quality = max(region.quality_score / 100.0, 0.05)
+            weight = (
+                patch_quality
+                * region_quality
+                * region.weight_multiplier
+                * _region_base_weight(region.name)
+                * _region_patch_role_weight(region)
+            )
+            if is_midtone:
+                weight *= 1.12
+            else:
+                weight *= 0.82
+            candidates.append(
+                {
+                    "region": region.name,
+                    "rgb": np.array(rgb, dtype=np.float64),
+                    "lab": np.array(lab, dtype=np.float64),
+                    "patch_quality": float(patch_quality),
+                    "region_quality": float(region_quality),
+                    "weight": float(weight),
+                    "midtone": bool(is_midtone),
+                }
+            )
+
+    diagnostics = {
+        "used": False,
+        "stable_patches_available": len(candidates),
+        "stable_patches_used": 0,
+        "outlier_patches_rejected": 0,
+        "highlight_patches_rejected": highlight_rejected,
+        "shadow_patches_rejected": shadow_rejected,
+        "midtone_patches_used": 0,
+        "dominant_region_contribution": "none",
+        "fallback_reason": "",
+    }
+    represented_regions = {c["region"] for c in candidates}
+    if len(candidates) < 3 or len(represented_regions) < 2:
+        diagnostics["fallback_reason"] = (
+            "Patch voting fallback used because fewer than three stable patches across two regions were available."
+        )
+        return None, None, diagnostics
+
+    labs = np.stack([c["lab"] for c in candidates])
+    weights = np.array([c["weight"] for c in candidates], dtype=np.float64)
+    quality_order = np.argsort(weights)[::-1]
+    central_count = max(3, min(len(candidates), int(np.ceil(len(candidates) * 0.6))))
+    central_idx = quality_order[:central_count]
+    central_lab = _weighted_lab_mean(labs[central_idx], weights[central_idx])
+    distances = np.linalg.norm(labs - central_lab, axis=1)
+
+    kept_indices: list[int] = []
+    adjusted_weights = weights.copy()
+    for idx, candidate in enumerate(candidates):
+        distance = float(distances[idx])
+        outlier_threshold = 18.0
+        if candidate["region"] == JAWLINE_NAME and candidate["midtone"]:
+            outlier_threshold = 22.0
+        if distance > outlier_threshold:
+            diagnostics["outlier_patches_rejected"] += 1
+            continue
+        if distance > 10.0:
+            adjusted_weights[idx] *= 0.45
+        kept_indices.append(idx)
+
+    if len(kept_indices) < 3 or len({candidates[i]["region"] for i in kept_indices}) < 2:
+        diagnostics["fallback_reason"] = (
+            "Patch voting fallback used because robust outlier filtering left too few stable patches."
+        )
+        return None, None, diagnostics
+
+    kept_labs = labs[kept_indices]
+    kept_weights = adjusted_weights[kept_indices]
+    kept_distances = distances[kept_indices]
+    trim_cutoff = float(np.percentile(kept_distances, 85))
+    trim_mask = kept_distances <= max(trim_cutoff, 8.0)
+    if trim_mask.sum() >= 3 and len(set(candidates[i]["region"] for i, keep in zip(kept_indices, trim_mask) if keep)) >= 2:
+        kept_indices = [idx for idx, keep in zip(kept_indices, trim_mask) if keep]
+        kept_labs = labs[kept_indices]
+        kept_weights = adjusted_weights[kept_indices]
+
+    final_lab_array = _weighted_lab_mean(kept_labs, kept_weights)
+    final_rgb = _lab_to_rgb_tuple(final_lab_array)
+    region_weight_totals: dict[str, float] = {}
+    for idx, weight in zip(kept_indices, kept_weights):
+        region_weight_totals[candidates[idx]["region"]] = region_weight_totals.get(candidates[idx]["region"], 0.0) + float(weight)
+    dominant_region = max(region_weight_totals, key=region_weight_totals.get)
+    total_weight = sum(region_weight_totals.values()) or 1.0
+
+    diagnostics.update(
+        {
+            "used": True,
+            "stable_patches_used": len(kept_indices),
+            "midtone_patches_used": sum(1 for idx in kept_indices if candidates[idx]["midtone"]),
+            "dominant_region_contribution": (
+                f"{dominant_region.replace('_', ' ').title()} ({region_weight_totals[dominant_region] / total_weight:.0%})"
+            ),
+        }
+    )
+    return final_rgb, tuple(final_lab_array.tolist()), diagnostics
+
+
 def _adjusted_region_consistency(regions: list, reliable_by_name: dict) -> float:
     consistency = _region_consistency(regions)
     if not _both_cheeks_agree(reliable_by_name):
@@ -853,8 +1024,17 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     rgb_stack = np.array([r.median_rgb for r in combination_regions], dtype=np.float64)
     lab_stack = np.array([r.median_lab for r in combination_regions], dtype=np.float64)
 
-    final_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
-    final_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
+    region_blend_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
+    region_blend_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
+    patch_rgb, patch_lab, patch_voting_diagnostics = _aggregate_patch_candidates(combination_regions)
+    if patch_rgb is not None and patch_lab is not None:
+        final_rgb = patch_rgb
+        final_lab = patch_lab
+    else:
+        final_rgb = region_blend_rgb
+        final_lab = region_blend_lab
+        if patch_voting_diagnostics.get("fallback_reason"):
+            warnings.append(patch_voting_diagnostics["fallback_reason"])
     depth_diagnostic = build_skin_depth_diagnostic(final_lab)
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
@@ -882,6 +1062,12 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         "cheek_area_balance": cheek_area_balance,
     }
     extraction_quality_reasons = _build_extraction_quality_reasons(region_results, quality_fields)
+    if patch_voting_diagnostics.get("used"):
+        extraction_quality_reasons.append(
+            "Final skin tone was aggregated from stable diffuse patches across trusted regions."
+        )
+    elif patch_voting_diagnostics.get("fallback_reason"):
+        extraction_quality_reasons.append(patch_voting_diagnostics["fallback_reason"])
 
     return SkinToneResult(
         rgb=final_rgb,
@@ -895,6 +1081,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         included_region_names=included_region_names,
         excluded_region_names=excluded_region_names,
         extraction_quality_reasons=extraction_quality_reasons,
+        patch_voting_diagnostics=patch_voting_diagnostics,
         depth_estimate=depth_diagnostic.depth_category,
         ita_degrees=depth_diagnostic.ita_degrees,
         ita_category=depth_diagnostic.ita_category,

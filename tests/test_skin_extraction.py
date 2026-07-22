@@ -8,6 +8,8 @@ from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
 from src.skin_extraction import (
     MIN_VALID_PIXELS_PER_REGION,
+    RegionSkinResult,
+    _aggregate_patch_candidates,
     _assert_skimage_lab_scale,
     extract_skin_tone,
     _filter_skin_pixels,
@@ -356,7 +358,25 @@ def test_deep_skin_with_bright_highlight_patches_does_not_become_too_light():
 
     assert skin.lab[0] < 40
     assert skin.depth_estimate in {"deep", "rich-deep"}
+    assert skin.patch_voting_diagnostics["used"] is True
     assert any("bright highlight patches were excluded" in r.lower() for r in skin.extraction_quality_reasons)
+
+
+def test_patch_voting_shadow_patch_does_not_pull_final_lab_too_dark():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(152, 105, 78),
+        left_cheek_rgb=(150, 100, 72),
+        right_cheek_rgb=(150, 100, 72),
+        jawline_rgb=(140, 92, 68),
+    )
+    image[30:50, 0:22] = (18, 12, 10)
+    image[60:80, 0:30] = (20, 13, 10)
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.patch_voting_diagnostics["used"] is True
+    assert skin.patch_voting_diagnostics["outlier_patches_rejected"] > 0
+    assert 33 < skin.lab[0] < 55
 
 
 def test_valid_darker_jawline_with_low_variance_is_not_heavily_downweighted():
@@ -372,6 +392,27 @@ def test_valid_darker_jawline_with_low_variance_is_not_heavily_downweighted():
     assert jawline.weight_multiplier >= 0.75
     assert jawline.downweight_reason is None
     assert any("jawline/lower-cheek patches supported" in r.lower() for r in skin.extraction_quality_reasons)
+
+
+def test_valid_darker_jawline_patch_can_support_depth_when_reliable():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(88, 60, 45),
+        left_cheek_rgb=(88, 60, 45),
+        right_cheek_rgb=(88, 60, 45),
+        jawline_rgb=(56, 36, 28),
+    )
+    skin = extract_skin_tone(image, masks)
+    cheek_l = np.mean(
+        [
+            skin.region_results["left_cheek"].median_lab[0],
+            skin.region_results["right_cheek"].median_lab[0],
+        ]
+    )
+
+    assert skin.patch_voting_diagnostics["used"] is True
+    assert skin.region_results["jawline"].role == "supporting"
+    assert skin.lab[0] < cheek_l
+    assert any("stable diffuse patches" in r.lower() for r in skin.extraction_quality_reasons)
 
 
 @pytest.mark.parametrize(
@@ -414,6 +455,81 @@ def test_possible_makeup_highlight_influence_warns_and_downweights_cheek():
     assert left.makeup_influence_detected
     assert left.weight_multiplier < 1.0
     assert any("possible makeup/highlight influence detected" in w.lower() for w in skin.warnings)
+
+
+def test_patch_voting_rejects_lab_outlier_patch():
+    cheek = RegionSkinResult(
+        "left_cheek",
+        400,
+        360,
+        0.9,
+        (150, 100, 72),
+        (45.0, 13.0, 20.0),
+        True,
+        stable_patch_count=4,
+        stable_patch_rgbs=[(150, 100, 72), (152, 101, 73), (149, 99, 71), (60, 20, 20)],
+        stable_patch_labs=[(45.0, 13.0, 20.0), (45.4, 13.1, 20.2), (44.8, 12.9, 19.8), (18.0, 28.0, 12.0)],
+        stable_patch_quality_scores=[0.95, 0.95, 0.95, 0.9],
+        stable_patch_midtone_flags=[True, True, True, True],
+        quality_score=95.0,
+        role="trusted",
+    )
+    jawline = RegionSkinResult(
+        "jawline",
+        400,
+        340,
+        0.85,
+        (142, 94, 68),
+        (42.0, 12.0, 18.0),
+        True,
+        stable_patch_count=3,
+        stable_patch_rgbs=[(142, 94, 68), (141, 93, 68), (143, 95, 69)],
+        stable_patch_labs=[(42.0, 12.0, 18.0), (41.8, 12.1, 18.1), (42.3, 11.9, 17.9)],
+        stable_patch_quality_scores=[0.9, 0.9, 0.9],
+        stable_patch_midtone_flags=[True, True, True],
+        quality_score=88.0,
+        role="supporting",
+    )
+
+    _, final_lab, diagnostics = _aggregate_patch_candidates([cheek, jawline])
+
+    assert diagnostics["used"] is True
+    assert diagnostics["outlier_patches_rejected"] >= 1
+    assert final_lab[0] > 38
+
+
+def test_patch_voting_falls_back_safely_if_too_few_stable_patches_exist():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    for name in masks:
+        masks[name][:] = 0
+    masks["left_cheek"][30:42, 0:12] = 255
+    masks["right_cheek"][30:42, 50:62] = 255
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.success
+    assert skin.patch_voting_diagnostics["used"] is False
+    assert "fallback" in skin.patch_voting_diagnostics["fallback_reason"].lower()
+
+
+def test_patch_voting_final_lab_and_rgb_are_valid_ranges():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    skin = extract_skin_tone(image, masks)
+
+    assert all(0 <= channel <= 255 for channel in skin.rgb)
+    assert 0.0 <= skin.lab[0] <= 100.0
+    assert skin.patch_voting_diagnostics["stable_patches_available"] >= skin.patch_voting_diagnostics["stable_patches_used"]
+    assert "dominant_region_contribution" in skin.patch_voting_diagnostics
 
 
 def test_region_reliability_score_reflects_patch_and_valid_pixel_quality():

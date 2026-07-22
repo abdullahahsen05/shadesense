@@ -39,6 +39,10 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Highlight patches rejected:" in page_text
     assert "Shadow patches rejected:" in page_text
     assert "Mid-tone patches used:" in page_text
+    assert "Patch Voting Summary" in page_text
+    assert "Patch voting used:" in page_text
+    assert "Outlier patches rejected:" in page_text
+    assert "Dominant/trusted region contribution:" in page_text
     assert "Jawline reduction reason:" in page_text
     assert "Final depth estimate:" in page_text
     assert "Color Correction Diagnostics" in page_text

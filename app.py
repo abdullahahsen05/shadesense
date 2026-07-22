@@ -274,6 +274,18 @@ if uploaded_file is not None:
 
         with st.expander("Region color diagnostics"):
             st.caption("Region color diagnostics")
+            patch_diag = skin_result.patch_voting_diagnostics or {}
+            st.markdown("**Patch Voting Summary**")
+            st.caption(f"Patch voting used: {'yes' if patch_diag.get('used') else 'no'}")
+            st.caption(f"Stable patches available: {patch_diag.get('stable_patches_available', 0)}")
+            st.caption(f"Stable patches used: {patch_diag.get('stable_patches_used', 0)}")
+            st.caption(f"Outlier patches rejected: {patch_diag.get('outlier_patches_rejected', 0)}")
+            st.caption(f"Highlight patches rejected: {patch_diag.get('highlight_patches_rejected', 0)}")
+            st.caption(f"Shadow patches rejected: {patch_diag.get('shadow_patches_rejected', 0)}")
+            st.caption(f"Mid-tone patches used: {patch_diag.get('midtone_patches_used', 0)}")
+            st.caption(f"Dominant/trusted region contribution: {patch_diag.get('dominant_region_contribution', 'none')}")
+            if patch_diag.get("fallback_reason"):
+                st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")
             for region_name, region in skin_result.region_results.items():
                 st.markdown(f"**{region_name.replace('_', ' ').title()}**")
                 if region.median_rgb is not None:
