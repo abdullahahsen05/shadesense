@@ -180,6 +180,9 @@ if uploaded_file is not None:
             st.metric("Extraction quality score", f"{skin_result.quality_score:.0%}")
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Lab: {lab_rounded}")
+            if skin_result.ita_degrees is not None:
+                st.caption(f"Estimated ITA: {skin_result.ita_degrees:.1f} deg ({skin_result.ita_category})")
+            st.caption(f"Estimated skin-depth category: {skin_result.depth_estimate or 'unknown'}")
             for region_name, region in skin_result.region_results.items():
                 patch_note = (
                     f", {region.stable_patch_count} stable patches"
@@ -340,6 +343,14 @@ if uploaded_file is not None:
                                 st.caption(
                                     f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
                                 )
+                            st.caption(
+                                "Depth sanity: "
+                                f"extracted {match.extracted_depth or skin_result.depth_estimate or 'unknown'} | "
+                                f"recommended {match.depth or 'unknown'} | "
+                                f"status {match.depth_match_status}."
+                            )
+                            if match.depth_sanity_note:
+                                st.caption(match.depth_sanity_note)
                             explanation = build_explanation(
                                 match, skin_result, quality_report, match.rank, matches
                             )

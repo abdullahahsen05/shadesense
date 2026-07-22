@@ -13,6 +13,13 @@ try:
 except ImportError:  # pragma: no cover - skimage always ships with deltaE_ciede2000
     _HAS_CIEDE2000 = False
 
+from src.depth_diagnostics import (
+    DEPTH_ORDER,
+    depth_match_status,
+    depth_sanity_note,
+    estimate_depth_from_lab_l,
+)
+
 
 @dataclass
 class ShadeMatch:
@@ -35,17 +42,11 @@ class ShadeMatch:
     ranking_score: float | None = None
     product_variants: list | None = None
     explanation: str | None = None
+    extracted_depth: str | None = None
+    depth_match_status: str = "unknown"
+    depth_sanity_note: str | None = None
 
 
-DEPTH_ORDER = {
-    "fair": 0,
-    "light": 1,
-    "light-medium": 2,
-    "medium": 3,
-    "tan": 4,
-    "deep": 5,
-    "rich-deep": 6,
-}
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
 DEPTH_TIE_PENALTY = 0.35
 VARIANT_DELTA_E_WINDOW = 1.5
@@ -60,23 +61,6 @@ def _normalize_key_text(value) -> str:
 
 def _rgb_distance(a: tuple, b: tuple) -> float:
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
-
-
-def estimate_depth_from_lab_l(l_value: float) -> str:
-    """Estimate broad skin depth from Lab L*."""
-    if l_value >= 85:
-        return "fair"
-    if l_value >= 75:
-        return "light"
-    if l_value >= 65:
-        return "light-medium"
-    if l_value >= 55:
-        return "medium"
-    if l_value >= 45:
-        return "tan"
-    if l_value >= 32:
-        return "deep"
-    return "rich-deep"
 
 
 def _depth_distance(estimated_depth: str, catalog_depth) -> int:
@@ -102,8 +86,9 @@ def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarra
     return np.linalg.norm(catalog_lab - np.asarray(skin_lab), axis=1)
 
 
-def _row_to_match(row, idx, distances, ranking_scores, rank: int = 0) -> ShadeMatch:
+def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, rank: int = 0) -> ShadeMatch:
     depth_penalty = float(ranking_scores[idx] - distances[idx])
+    shade_depth = row.get("depth") if pd.notna(row.get("depth")) else None
     return ShadeMatch(
         shade_id=str(row["shade_id"]),
         brand=str(row["brand"]),
@@ -114,12 +99,15 @@ def _row_to_match(row, idx, distances, ranking_scores, rank: int = 0) -> ShadeMa
         delta_e=float(distances[idx]),
         product=row.get("product") if pd.notna(row.get("product")) else None,
         undertone=row.get("undertone") if pd.notna(row.get("undertone")) else None,
-        depth=row.get("depth") if pd.notna(row.get("depth")) else None,
+        depth=shade_depth,
         source=row.get("source") if pd.notna(row.get("source")) else None,
         source_url=row.get("source_url") if pd.notna(row.get("source_url")) else None,
         depth_penalty=depth_penalty,
         ranking_score=float(ranking_scores[idx]),
         product_variants=[],
+        extracted_depth=extracted_depth,
+        depth_match_status=depth_match_status(extracted_depth, shade_depth),
+        depth_sanity_note=depth_sanity_note(extracted_depth, shade_depth),
         rank=rank,
     )
 
@@ -202,7 +190,7 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
     matches = []
     for idx in order:
         row = catalog_df.iloc[idx]
-        candidate = _row_to_match(row, idx, distances, ranking_scores)
+        candidate = _row_to_match(row, idx, distances, ranking_scores, estimated_depth)
         grouped = False
         for existing in matches:
             if _is_same_shade_candidate(candidate, existing):

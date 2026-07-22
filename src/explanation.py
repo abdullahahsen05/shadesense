@@ -34,6 +34,9 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
             "had very similar Delta E scores."
         )
 
+    if getattr(match, "depth_sanity_note", None):
+        parts.append(match.depth_sanity_note)
+
     if getattr(match, "product_variants", None):
         parts.append(
             "This shade appears in multiple product formats in the catalog; the closest "

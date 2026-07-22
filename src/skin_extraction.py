@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 from skimage.color import rgb2lab
 
+from src.depth_diagnostics import build_skin_depth_diagnostic
+
 REGION_NAMES = ["forehead", "left_cheek", "right_cheek", "jawline"]
 CHEEK_NAMES = ("left_cheek", "right_cheek")
 FOREHEAD_NAME = "forehead"
@@ -118,6 +120,8 @@ class SkinToneResult:
     excluded_region_names: list = field(default_factory=list)
     extraction_quality_reasons: list = field(default_factory=list)
     depth_estimate: str | None = None
+    ita_degrees: float | None = None
+    ita_category: str | None = None
     warnings: list = field(default_factory=list)
     success: bool = True
 
@@ -413,22 +417,6 @@ def _lab_distance(a, b) -> float:
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
 
-def _estimate_depth_from_lab_l(l_value: float) -> str:
-    if l_value >= 85:
-        return "fair"
-    if l_value >= 75:
-        return "light"
-    if l_value >= 65:
-        return "light-medium"
-    if l_value >= 55:
-        return "medium"
-    if l_value >= 45:
-        return "tan"
-    if l_value >= 32:
-        return "deep"
-    return "rich-deep"
-
-
 def _cheek_anchor_lab(reliable_by_name: dict):
     """Weighted-average Lab of whichever cheek region(s) are reliable.
     Cheeks are the least likely regions to be contaminated by hair or
@@ -720,6 +708,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 excluded_region_names=[n for n, r in region_results.items() if r.excluded],
                 extraction_quality_reasons=[],
                 depth_estimate=None,
+                ita_degrees=None,
+                ita_category=None,
                 warnings=warnings,
                 success=False,
             )
@@ -743,7 +733,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     final_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
     final_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
-    depth_estimate = _estimate_depth_from_lab_l(float(final_lab[0]))
+    depth_diagnostic = build_skin_depth_diagnostic(final_lab)
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
     avg_valid_ratio = float(np.mean([r.valid_ratio for r in region_results.values()])) if region_results else 0.0
@@ -783,7 +773,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         included_region_names=included_region_names,
         excluded_region_names=excluded_region_names,
         extraction_quality_reasons=extraction_quality_reasons,
-        depth_estimate=depth_estimate,
+        depth_estimate=depth_diagnostic.depth_category,
+        ita_degrees=depth_diagnostic.ita_degrees,
+        ita_category=depth_diagnostic.ita_category,
         warnings=warnings,
         success=True,
     )

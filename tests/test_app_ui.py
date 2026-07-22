@@ -46,6 +46,9 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Shade extraction source:" in page_text
     assert "Selection reason:" in page_text
     assert "displayed on Original image" in page_text
+    assert "Estimated ITA:" in page_text
+    assert "Estimated skin-depth category:" in page_text
+    assert "Depth sanity:" in page_text
 
 
 def test_capture_guidance_text_exists():
