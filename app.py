@@ -12,6 +12,7 @@ from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.face_detection import detect_face_landmarks
+from src.lighting_quality import analyze_lighting_quality
 from src.region_masks import build_region_masks
 from src.shade_catalog import (
     MOCK_CATALOG_KEY,
@@ -76,6 +77,7 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     image_rgb = np.array(image)
+    lighting_quality = analyze_lighting_quality(image_rgb)
     corrected_rgb, correction_notes = apply_mild_color_correction(image_rgb)
 
     col1, col2 = st.columns(2)
@@ -99,6 +101,12 @@ if uploaded_file is not None:
         with st.expander("Lighting correction notes"):
             for note in correction_notes:
                 st.caption(note)
+
+        st.subheader("Lighting Quality")
+        st.metric("Lighting quality score", f"{lighting_quality.score:.0%}")
+        st.caption(lighting_quality.explanation)
+        for warning in lighting_quality.warnings:
+            st.warning(warning)
 
         masks = build_region_masks(corrected_rgb.shape, face_result.landmarks)
 
@@ -193,7 +201,9 @@ if uploaded_file is not None:
                             f"showing all available instead of {TOP_K_SHADES}."
                         )
 
-                    quality_report = build_quality_report(skin_result, face_result, matches)
+                    quality_report = build_quality_report(
+                        skin_result, face_result, matches, lighting_quality
+                    )
                     matches = compute_confidence(matches, quality_report)
 
                     for w in quality_report.warnings:
@@ -207,6 +217,15 @@ if uploaded_file is not None:
                             st.caption(f"Product: {match.product or 'unknown'}")
                             st.caption(f"{match.brand} · {match.hex}")
                             st.metric("Match confidence", f"{match.confidence:.0%}")
+                            if match.confidence_breakdown:
+                                st.caption(
+                                    "Confidence breakdown: "
+                                    f"color {match.confidence_breakdown['color_distance_contribution']:.2f}, "
+                                    f"regions {match.confidence_breakdown['region_consistency_contribution']:.2f}, "
+                                    f"pixels/patches {match.confidence_breakdown['valid_pixel_patch_contribution']:.2f}, "
+                                    f"lighting {match.confidence_breakdown['lighting_quality_contribution']:.2f}, "
+                                    f"separation {match.confidence_breakdown['top_shade_separation_contribution']:.2f}."
+                                )
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
                             if match.undertone or match.depth:
                                 st.caption(
