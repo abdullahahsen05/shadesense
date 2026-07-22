@@ -23,6 +23,8 @@
 - Color correction safeguard: original image color is preserved unless the
   corrected version improves extraction reliability without excessive Lab or
   chroma shift.
+- Extraction quality vs match confidence: I separated image/extraction reliability from catalog match confidence.
+  This prevents the system from being overconfident when the input image is poor.
 - Confidence reduction: confidence is lowered for poor lighting, weak face
   quality, few valid pixels, uneven region agreement, cheek imbalance, or close
   shade ties.
@@ -47,3 +49,6 @@
   public product/swatch data, not measurements of real product on skin.
 - Confidence is heuristic: the confidence score is explainable and factor-based,
   but it is not a calibrated probability of real-world shade satisfaction.
+- Skin Extraction Quality is also heuristic, but it answers a different
+  question: whether the extracted skin swatch is reliable enough to compare
+  against the catalog.

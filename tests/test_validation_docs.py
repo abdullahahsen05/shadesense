@@ -58,9 +58,23 @@ def test_demo_talking_points_contains_variation_handling_section():
         "mild makeup",
         "jawline and forehead contamination",
         "color correction safeguard",
+        "extraction quality vs match confidence",
+        "separated image/extraction reliability from catalog match confidence",
         "confidence reduction",
         "public catalog limitations",
         "camera processing",
         "white balance",
     ]:
         assert required_text in text
+
+
+def test_approach_explains_extraction_quality_and_match_confidence_are_separate():
+    path = Path("docs/approach.md")
+
+    assert path.exists()
+    text = path.read_text(encoding="utf-8").casefold()
+
+    assert "skin extraction quality score" in text
+    assert "match confidence" in text
+    assert "intentionally separate" in text
+    assert "input image is poor" in text

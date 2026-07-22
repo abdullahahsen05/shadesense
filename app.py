@@ -11,6 +11,7 @@ from src.color_correction import apply_mild_color_correction, correction_setting
 from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
+from src.extraction_quality import build_extraction_quality_report
 from src.extraction_summary import build_skin_extraction_summary
 from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
@@ -146,6 +147,13 @@ if uploaded_file is not None:
         )
         skin_result = extraction_selection.selected
         skin_result.extraction_quality_reasons.append(extraction_selection.reason)
+        extraction_quality_report = build_extraction_quality_report(
+            skin_result,
+            image_quality=image_quality,
+            lighting_quality=lighting_quality,
+            extraction_selection=extraction_selection,
+            face_result=face_result,
+        )
         visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
         visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
 
@@ -221,6 +229,26 @@ if uploaded_file is not None:
                     f"{region.valid_pixel_count}/{region.total_pixel_count} valid px "
                     f"({region.status_label}{patch_note})"
                 )
+
+        st.subheader("Skin Extraction Quality")
+        st.markdown(
+            f"**Skin Extraction Quality: {extraction_quality_report['overall_score']:.0f}/100 "
+            f"- {extraction_quality_report['label'].title()}**"
+        )
+        if extraction_quality_report["reasons"]:
+            st.caption(extraction_quality_report["reasons"][0])
+        for warning in extraction_quality_report["warnings"]:
+            st.warning(warning)
+        with st.expander("Skin Extraction Quality Details"):
+            st.caption("Skin Extraction Quality Details")
+            st.caption(
+                "Skin Extraction Quality is separate from shade Match confidence. "
+                "It measures how reliable the extracted skin color is before catalog matching."
+            )
+            for name, score in extraction_quality_report["subscores"].items():
+                st.caption(f"{name.replace('_', ' ').title()}: {score:.0f}/100")
+            for reason in extraction_quality_report["reasons"][1:]:
+                st.caption(reason)
 
         st.subheader("Skin Extraction Summary")
         st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
