@@ -9,11 +9,20 @@ from PIL import Image
 
 from src.color_correction import apply_mild_color_correction
 from src.confidence import build_quality_report, compute_confidence
-from src.config import APP_NAME, SHADE_CATALOG_PATH, TOP_K_SHADES
+from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
-from src.shade_catalog import CatalogValidationError, load_shade_catalog
+from src.shade_catalog import (
+    MOCK_CATALOG_KEY,
+    PUBLIC_CATALOG_KEY,
+    PUBLIC_CATALOG_LIMITATION,
+    CatalogValidationError,
+    catalog_definitions,
+    load_default_catalog,
+    load_shade_catalog,
+    load_named_catalog,
+)
 from src.shade_matcher import match_shades
 from src.skin_extraction import extract_skin_tone
 from src.visualization import (
@@ -26,6 +35,38 @@ from src.visualization import (
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
 st.title(APP_NAME)
+catalog_options = catalog_definitions()
+try:
+    default_catalog_key, _, default_catalog_warnings = load_default_catalog()
+except (FileNotFoundError, CatalogValidationError) as exc:
+    st.error(f"Could not load any shade catalog: {exc}")
+    st.stop()
+
+for warning in default_catalog_warnings:
+    st.warning(warning)
+
+catalog_keys = [PUBLIC_CATALOG_KEY, MOCK_CATALOG_KEY]
+selected_catalog_key = st.selectbox(
+    "Shade catalog",
+    catalog_keys,
+    format_func=lambda key: catalog_options[key].name,
+    index=catalog_keys.index(default_catalog_key),
+)
+
+try:
+    catalog_df = load_named_catalog(selected_catalog_key)
+except (FileNotFoundError, CatalogValidationError) as exc:
+    st.error(f"Selected shade catalog error: {exc}")
+    st.stop()
+
+SHADE_CATALOG_PATH = catalog_options[selected_catalog_key].path
+
+st.caption(
+    f"Selected catalog: {catalog_df.attrs.get('catalog_name', 'unknown')} | "
+    f"{catalog_df.attrs.get('valid_count', len(catalog_df))} shades | "
+    f"Source: {catalog_df.attrs.get('source', 'unknown')}"
+)
+st.warning(PUBLIC_CATALOG_LIMITATION)
 st.caption("Local AI foundation shade recommender — upload a facial photo to begin.")
 
 uploaded_file = st.file_uploader(
@@ -149,8 +190,9 @@ if uploaded_file is not None:
                         with col:
                             st.image(make_skin_swatch(match.rgb), width=150)
                             st.markdown(f"**#{match.rank}: {match.shade_name}**")
+                            st.caption(f"Product: {match.product or 'unknown'}")
                             st.caption(f"{match.brand} · {match.hex}")
-                            st.metric("Confidence", f"{match.confidence:.0%}")
+                            st.metric("Match confidence", f"{match.confidence:.0%}")
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
                             if match.undertone or match.depth:
                                 st.caption(
