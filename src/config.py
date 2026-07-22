@@ -8,6 +8,8 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 DEBUG_DIR = OUTPUTS_DIR / "debug"
 
 SHADE_CATALOG_PATH = DATA_DIR / "shade_catalog_mock.csv"
+MOCK_SHADE_CATALOG_PATH = SHADE_CATALOG_PATH
+PUBLIC_SHADE_CATALOG_PATH = DATA_DIR / "public_shade_catalog.csv"
 
 APP_NAME = "ShadeSense AI"
 

@@ -22,8 +22,11 @@ class ShadeMatch:
     rgb: tuple
     lab: tuple
     delta_e: float
+    product: str | None = None
     undertone: str | None = None
     depth: str | None = None
+    source: str | None = None
+    source_url: str | None = None
     rank: int = 0
     confidence: float | None = None
     explanation: str | None = None
@@ -73,8 +76,11 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
                 rgb=(int(row["r"]), int(row["g"]), int(row["b"])),
                 lab=(float(row["lab_l"]), float(row["lab_a"]), float(row["lab_b"])),
                 delta_e=float(distances[idx]),
+                product=row.get("product") if pd.notna(row.get("product")) else None,
                 undertone=row.get("undertone") if pd.notna(row.get("undertone")) else None,
                 depth=row.get("depth") if pd.notna(row.get("depth")) else None,
+                source=row.get("source") if pd.notna(row.get("source")) else None,
+                source_url=row.get("source_url") if pd.notna(row.get("source_url")) else None,
                 rank=rank,
             )
         )

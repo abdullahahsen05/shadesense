@@ -1,15 +1,38 @@
-"""Shade catalog loading, normalization, and Lab conversion."""
+"""Shade catalog loading, normalization, metadata, and Lab conversion."""
 
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from skimage.color import rgb2lab
 
+from src.config import MOCK_SHADE_CATALOG_PATH, PUBLIC_SHADE_CATALOG_PATH
+
 REQUIRED_BASE_COLUMNS = ["shade_id", "brand", "shade_name"]
-OPTIONAL_COLUMNS = ["undertone", "depth", "notes"]
+OPTIONAL_COLUMNS = ["product", "undertone", "depth", "notes", "source", "source_url"]
 
 HEX_PATTERN = re.compile(r"^#?[0-9A-Fa-f]{6}$")
+PUBLIC_CATALOG_KEY = "public"
+MOCK_CATALOG_KEY = "mock"
+PUBLIC_CATALOG_NAME = "Public Sephora-style catalog"
+MOCK_CATALOG_NAME = "Mock development catalog"
+PUBLIC_CATALOG_SOURCE = "Public Sephora-style foundation swatch dataset"
+MOCK_CATALOG_SOURCE = "Local mock development catalog"
+PUBLIC_CATALOG_LIMITATION = (
+    "Public catalog colors are website-derived swatch approximations and may differ "
+    "from real applied foundation due to lighting, display calibration, brand image "
+    "processing, oxidation, and skin texture."
+)
+
+
+@dataclass(frozen=True)
+class CatalogDefinition:
+    key: str
+    name: str
+    path: Path
+    source: str
 
 
 class CatalogValidationError(ValueError):
@@ -43,7 +66,55 @@ def _valid_rgb_component(value) -> bool:
     return 0 <= v <= 255 and not np.isnan(v)
 
 
-def load_shade_catalog(path: str) -> pd.DataFrame:
+def catalog_definitions(
+    public_path: str | Path = PUBLIC_SHADE_CATALOG_PATH,
+    mock_path: str | Path = MOCK_SHADE_CATALOG_PATH,
+) -> dict[str, CatalogDefinition]:
+    """Return supported local catalog definitions."""
+    return {
+        PUBLIC_CATALOG_KEY: CatalogDefinition(
+            key=PUBLIC_CATALOG_KEY,
+            name=PUBLIC_CATALOG_NAME,
+            path=Path(public_path),
+            source=PUBLIC_CATALOG_SOURCE,
+        ),
+        MOCK_CATALOG_KEY: CatalogDefinition(
+            key=MOCK_CATALOG_KEY,
+            name=MOCK_CATALOG_NAME,
+            path=Path(mock_path),
+            source=MOCK_CATALOG_SOURCE,
+        ),
+    }
+
+
+def _catalog_attrs(
+    catalog_df: pd.DataFrame,
+    path: str | Path,
+    catalog_name: str | None,
+    catalog_source: str | None,
+    warnings: list[str],
+    dropped_count: int,
+) -> None:
+    source_values = []
+    if "source" in catalog_df.columns:
+        source_values = [
+            str(v).strip()
+            for v in catalog_df["source"].dropna().unique().tolist()
+            if str(v).strip()
+        ]
+    source = catalog_source or (source_values[0] if source_values else "unknown")
+    catalog_df.attrs["catalog_name"] = catalog_name or Path(path).stem
+    catalog_df.attrs["source"] = source
+    catalog_df.attrs["warnings"] = warnings
+    catalog_df.attrs["dropped_count"] = dropped_count
+    catalog_df.attrs["valid_count"] = len(catalog_df)
+
+
+def load_shade_catalog(
+    path: str | Path,
+    catalog_name: str | None = None,
+    catalog_source: str | None = None,
+) -> pd.DataFrame:
     """Load and normalize a shade catalog CSV.
 
     Validates required columns, normalizes HEX/RGB (deriving whichever is
@@ -119,8 +190,50 @@ def load_shade_catalog(path: str) -> pd.DataFrame:
     catalog_df["lab_a"] = lab_array[:, 1]
     catalog_df["lab_b"] = lab_array[:, 2]
 
-    catalog_df.attrs["warnings"] = warnings
-    catalog_df.attrs["dropped_count"] = len(raw_df) - len(valid_rows)
-    catalog_df.attrs["valid_count"] = len(valid_rows)
+    _catalog_attrs(
+        catalog_df=catalog_df,
+        path=path,
+        catalog_name=catalog_name,
+        catalog_source=catalog_source,
+        warnings=warnings,
+        dropped_count=len(raw_df) - len(valid_rows),
+    )
 
     return catalog_df
+
+
+def load_named_catalog(
+    key: str,
+    public_path: str | Path = PUBLIC_SHADE_CATALOG_PATH,
+    mock_path: str | Path = MOCK_SHADE_CATALOG_PATH,
+) -> pd.DataFrame:
+    """Load one supported catalog by key."""
+    definitions = catalog_definitions(public_path=public_path, mock_path=mock_path)
+    if key not in definitions:
+        raise CatalogValidationError(f"Unknown catalog key: {key}")
+    definition = definitions[key]
+    return load_shade_catalog(
+        definition.path,
+        catalog_name=definition.name,
+        catalog_source=definition.source,
+    )
+
+
+def load_default_catalog(
+    public_path: str | Path = PUBLIC_SHADE_CATALOG_PATH,
+    mock_path: str | Path = MOCK_SHADE_CATALOG_PATH,
+) -> tuple[str, pd.DataFrame, list[str]]:
+    """Load public catalog when valid, otherwise fall back to mock catalog."""
+    fallback_warnings = []
+    try:
+        public_df = load_named_catalog(
+            PUBLIC_CATALOG_KEY, public_path=public_path, mock_path=mock_path
+        )
+        return PUBLIC_CATALOG_KEY, public_df, []
+    except (FileNotFoundError, CatalogValidationError) as exc:
+        fallback_warnings.append(
+            f"Public catalog unavailable or invalid; using mock catalog instead. {exc}"
+        )
+
+    mock_df = load_named_catalog(MOCK_CATALOG_KEY, public_path=public_path, mock_path=mock_path)
+    return MOCK_CATALOG_KEY, mock_df, fallback_warnings
