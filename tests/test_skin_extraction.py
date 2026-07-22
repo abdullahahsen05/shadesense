@@ -7,7 +7,6 @@ from src.config import PROJECT_ROOT
 from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
 from src.skin_extraction import (
-    JAWLINE_DOWNWEIGHT_FACTOR,
     MIN_VALID_PIXELS_PER_REGION,
     _assert_skimage_lab_scale,
     extract_skin_tone,
@@ -145,7 +144,7 @@ def test_forehead_stays_included_when_it_agrees_with_cheeks():
     assert "forehead" in skin.included_region_names
 
 
-def test_jawline_downweighted_when_significantly_darker_than_cheeks():
+def test_jawline_not_downweighted_when_darker_but_clean_and_stable():
     image, masks = _synthetic_scene(
         forehead_rgb=SIMILAR_FOREHEAD_RGB,
         left_cheek_rgb=CHEEK_RGB,
@@ -155,11 +154,10 @@ def test_jawline_downweighted_when_significantly_darker_than_cheeks():
     skin = extract_skin_tone(image, masks)
 
     jawline = skin.region_results["jawline"]
-    assert jawline.excluded is False, "jawline should be down-weighted, never fully excluded"
-    assert jawline.weight_multiplier == JAWLINE_DOWNWEIGHT_FACTOR
-    assert jawline.downweight_reason is not None
+    assert jawline.excluded is False
+    assert jawline.weight_multiplier >= 0.75
+    assert jawline.downweight_reason is None
     assert "jawline" in skin.included_region_names
-    assert any("jawline" in w.lower() for w in skin.warnings)
 
 
 def test_jawline_full_weight_when_similar_to_cheeks():
@@ -233,7 +231,7 @@ def test_best_patch_extraction_rejects_noisy_high_variance_patches():
     image[0:18, 0:18] = stable_rgb
     image[0:18, 24:42] = stable_rgb + np.array([2, 1, 0], dtype=np.uint8)
 
-    patch_rgb, patch_lab, stable_count = _stable_patch_medians(image, mask)
+    patch_rgb, patch_lab, stable_count, _ = _stable_patch_medians(image, mask)
 
     assert stable_count >= 2
     assert len(patch_lab) >= 2
@@ -295,12 +293,71 @@ def test_stable_patch_extraction_rejects_shadow_and_highlight_patches():
     mask = np.ones((80, 80), dtype=np.uint8) * 255
     image[0:24, 0:24] = (15, 10, 8)
     image[56:80, 56:80] = (250, 246, 238)
-    patch_rgb, _, stable_count = _stable_patch_medians(
+    patch_rgb, _, stable_count, stats = _stable_patch_medians(
         image, mask, region_luminance_bounds=(35.0, 75.0)
     )
 
     assert stable_count >= 2
+    assert stats["shadow_patches_rejected"] > 0
+    assert stats["highlight_patches_rejected"] > 0
     assert np.linalg.norm(np.median(patch_rgb, axis=0) - np.array([180, 135, 105])) < 10
+
+
+def test_deep_skin_with_bright_highlight_patches_does_not_become_too_light():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(72, 48, 36),
+        left_cheek_rgb=(82, 54, 40),
+        right_cheek_rgb=(82, 54, 40),
+        jawline_rgb=(60, 38, 30),
+    )
+    image[30:50, 0:22] = (210, 205, 195)
+    image[30:50, 50:72] = (210, 205, 195)
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.lab[0] < 40
+    assert skin.depth_estimate in {"deep", "rich-deep"}
+    assert any("bright highlight patches were excluded" in r.lower() for r in skin.extraction_quality_reasons)
+
+
+def test_valid_darker_jawline_with_low_variance_is_not_heavily_downweighted():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(88, 60, 45),
+        left_cheek_rgb=(88, 60, 45),
+        right_cheek_rgb=(88, 60, 45),
+        jawline_rgb=(62, 41, 31),
+    )
+    skin = extract_skin_tone(image, masks)
+
+    jawline = skin.region_results["jawline"]
+    assert jawline.weight_multiplier >= 0.75
+    assert jawline.downweight_reason is None
+    assert any("jawline/lower-cheek patches supported" in r.lower() for r in skin.extraction_quality_reasons)
+
+
+@pytest.mark.parametrize(
+    "rgb",
+    [
+        (245, 220, 200),
+        (190, 145, 112),
+        (150, 98, 70),
+        (70, 45, 34),
+        (38, 24, 18),
+    ],
+)
+def test_mid_tone_patch_selection_across_skin_depths(rgb):
+    image = np.full((96, 96, 3), rgb, dtype=np.uint8)
+    mask = np.ones((96, 96), dtype=np.uint8) * 255
+    image[0:24, 0:24] = np.maximum(np.array(rgb) - 30, 0).astype(np.uint8)
+    image[72:96, 72:96] = np.minimum(np.array(rgb) + 70, 255).astype(np.uint8)
+
+    patch_rgb, _, stable_count, stats = _stable_patch_medians(
+        image, mask, region_luminance_bounds=(5.0, 95.0, 20.0, 80.0)
+    )
+
+    assert stable_count >= 2
+    assert stats["midtone_patch_count"] >= 1
+    assert np.linalg.norm(np.median(patch_rgb, axis=0) - np.array(rgb)) < 20
 
 
 def test_possible_makeup_highlight_influence_warns_and_downweights_cheek():
@@ -373,8 +430,9 @@ def test_included_region_status_label_reflects_downweight():
         forehead_rgb=SIMILAR_FOREHEAD_RGB,
         left_cheek_rgb=CHEEK_RGB,
         right_cheek_rgb=CHEEK_RGB,
-        jawline_rgb=DARK_JAWLINE_RGB,
+        jawline_rgb=CHEEK_RGB,
     )
+    image[60:80, 0:45] = (65, 42, 32)
     skin = extract_skin_tone(image, masks)
 
     jawline = skin.region_results["jawline"]

@@ -204,9 +204,19 @@ if uploaded_file is not None:
                         st.caption(f"Status: {region.status_label}")
                         st.caption(f"Reliability score: {region.reliability_score:.0%}")
                         st.caption(f"Stable patches: {region.stable_patch_count}")
+                        st.caption(f"Mid-tone patches used: {region.midtone_patch_count}")
+                        st.caption(f"Highlight patches rejected: {region.highlight_patches_rejected}")
+                        st.caption(f"Shadow patches rejected: {region.shadow_patches_rejected}")
                         st.caption(f"Shadow/highlight ratio: {region.shadow_highlight_ratio:.0%}")
+                        if region_name == "jawline":
+                            if region.weight_multiplier < 1.0:
+                                st.caption(f"Jawline reduction reason: {region.downweight_reason}")
+                            else:
+                                st.caption("Jawline reduction reason: not reduced; reliable depth support.")
                         if region.makeup_influence_detected:
                             st.caption("possible makeup/highlight influence detected.")
+                        if region.specular_highlight_detected:
+                            st.caption("possible specular highlight influence detected.")
                         st.caption(
                             f"Valid pixels: {region.valid_pixel_count}/{region.total_pixel_count}"
                         )
@@ -218,6 +228,7 @@ if uploaded_file is not None:
                 st.image(make_skin_swatch(skin_result.rgb), width=90)
                 st.caption(f"RGB: {skin_result.rgb}")
                 st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
+                st.caption(f"Final depth estimate: {skin_result.depth_estimate or 'unknown'}")
 
         st.subheader("Extraction Quality Reasons")
         if skin_result.extraction_quality_reasons:

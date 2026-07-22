@@ -28,12 +28,17 @@ MAX_STABLE_PATCHES_PER_REGION = 8
 MAX_PATCH_LAB_STD = 8.0
 MAX_PATCH_RGB_STD = 34.0
 PATCH_LUMINANCE_MARGIN = 4.0
+PATCH_HIGHLIGHT_L_MARGIN = 3.0
+PATCH_SHADOW_L_MARGIN = 3.0
+PATCH_STRONG_CONTRAST_L = 18.0
+PATCH_HIGHLIGHT_PIXEL_RATIO = 0.18
+PATCH_WASHED_OUT_CHROMA = 9.0
+PATCH_LOW_SATURATION = 35.0
 MAKEUP_INFLUENCE_RATIO = 0.18
 HIGHLIGHT_INFLUENCE_RATIO = 0.18
 MAKEUP_DOWNWEIGHT_FACTOR = 0.75
 LOW_RELIABILITY_DOWNWEIGHT_FACTOR = 0.7
 REGION_RELIABILITY_THRESHOLD = 0.45
-JAWLINE_DELTA_E_DOWNWEIGHT_THRESHOLD = 14.0
 JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
 JAWLINE_HIGH_LAB_STD = 7.0
 JAWLINE_LOW_VALID_RATIO = 0.45
@@ -47,7 +52,6 @@ FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
 # tends to make it specifically darker (not just differently colored) than
 # the cheeks, so a lightness (L*) gap beyond this threshold reduces —
 # rather than removes — its weight in the final combination.
-JAWLINE_DARKNESS_L_THRESHOLD = 10.0
 JAWLINE_DOWNWEIGHT_FACTOR = 0.35
 CHEEK_AREA_IMBALANCE_WARNING_RATIO = 0.45
 
@@ -72,6 +76,10 @@ class RegionSkinResult:
     shadow_highlight_ratio: float = 0.0
     reliability_score: float = 0.0
     makeup_influence_detected: bool = False
+    specular_highlight_detected: bool = False
+    highlight_patches_rejected: int = 0
+    shadow_patches_rejected: int = 0
+    midtone_patch_count: int = 0
     warnings: list = field(default_factory=list)
 
     @property
@@ -109,6 +117,7 @@ class SkinToneResult:
     included_region_names: list = field(default_factory=list)
     excluded_region_names: list = field(default_factory=list)
     extraction_quality_reasons: list = field(default_factory=list)
+    depth_estimate: str | None = None
     warnings: list = field(default_factory=list)
     success: bool = True
 
@@ -173,11 +182,16 @@ def _stable_patch_medians(
     image_rgb: np.ndarray,
     mask: np.ndarray,
     region_luminance_bounds: tuple[float, float] | None = None,
-) -> tuple[np.ndarray, np.ndarray, int]:
+) -> tuple[np.ndarray, np.ndarray, int, dict]:
     """Return RGB/Lab medians from the most stable patches in a mask."""
     ys, xs = np.where(mask > 0)
+    stats = {
+        "highlight_patches_rejected": 0,
+        "shadow_patches_rejected": 0,
+        "midtone_patch_count": 0,
+    }
     if len(xs) == 0:
-        return np.empty((0, 3)), np.empty((0, 3)), 0
+        return np.empty((0, 3)), np.empty((0, 3)), 0, stats
 
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     y0, y1 = int(ys.min()), int(ys.max()) + 1
@@ -190,6 +204,13 @@ def _stable_patch_medians(
             if len(patch_pixels) < MIN_VALID_PIXELS_PER_PATCH:
                 continue
 
+            patch_raw_lab = _to_lab(patch_pixels)
+            patch_raw_l = patch_raw_lab[:, 0]
+            patch_l_median = float(np.median(patch_raw_l))
+            patch_l_contrast = float(np.percentile(patch_raw_l, 95) - np.percentile(patch_raw_l, 5))
+            patch_chroma = float(np.linalg.norm(np.median(patch_raw_lab, axis=0)[1:3]))
+            patch_saturation = float(np.median(_to_saturation(patch_pixels)))
+
             valid_rgb, valid_lab = _filter_skin_pixels(patch_pixels)
             if len(valid_rgb) < MIN_VALID_PIXELS_PER_PATCH:
                 continue
@@ -198,28 +219,54 @@ def _stable_patch_medians(
             rgb_std = float(np.mean(np.std(valid_rgb.astype(np.float64), axis=0)))
             if lab_std > MAX_PATCH_LAB_STD or rgb_std > MAX_PATCH_RGB_STD:
                 continue
+            luminance_mid_penalty = 0.0
             if region_luminance_bounds is not None:
-                patch_l = float(np.median(valid_lab[:, 0]))
-                low_l, high_l = region_luminance_bounds
-                if patch_l < low_l - PATCH_LUMINANCE_MARGIN or patch_l > high_l + PATCH_LUMINANCE_MARGIN:
+                if len(region_luminance_bounds) >= 4:
+                    low_l, high_l, mid_low_l, mid_high_l = region_luminance_bounds[:4]
+                else:
+                    low_l, high_l = region_luminance_bounds[:2]
+                    mid_low_l, mid_high_l = low_l, high_l
+                bright_pixel_ratio = float(np.mean(patch_raw_l > mid_high_l + PATCH_HIGHLIGHT_L_MARGIN))
+                if patch_l_median < low_l - PATCH_SHADOW_L_MARGIN:
+                    stats["shadow_patches_rejected"] += 1
                     continue
+                if patch_l_median > high_l + PATCH_HIGHLIGHT_L_MARGIN:
+                    stats["highlight_patches_rejected"] += 1
+                    continue
+                washed_out_highlight = (
+                    patch_l_median >= high_l - PATCH_HIGHLIGHT_L_MARGIN
+                    and (patch_chroma < PATCH_WASHED_OUT_CHROMA or patch_saturation < PATCH_LOW_SATURATION)
+                )
+                contrast_highlight = (
+                    patch_l_contrast > PATCH_STRONG_CONTRAST_L
+                    and bright_pixel_ratio >= PATCH_HIGHLIGHT_PIXEL_RATIO
+                )
+                if washed_out_highlight or contrast_highlight:
+                    stats["highlight_patches_rejected"] += 1
+                    continue
+                if mid_low_l <= patch_l_median <= mid_high_l:
+                    stats["midtone_patch_count"] += 1
+                else:
+                    mid_center = (mid_low_l + mid_high_l) / 2.0
+                    mid_width = max(mid_high_l - mid_low_l, 1.0)
+                    luminance_mid_penalty = abs(patch_l_median - mid_center) / mid_width
 
             stable.append(
                 (
-                    lab_std + rgb_std / 10.0,
+                    lab_std + rgb_std / 10.0 + luminance_mid_penalty,
                     np.median(valid_rgb, axis=0),
                     np.median(valid_lab, axis=0),
                 )
             )
 
     if len(stable) < MIN_STABLE_PATCHES_PER_REGION:
-        return np.empty((0, 3)), np.empty((0, 3)), len(stable)
+        return np.empty((0, 3)), np.empty((0, 3)), len(stable), stats
 
     stable.sort(key=lambda item: item[0])
     selected = stable[:MAX_STABLE_PATCHES_PER_REGION]
     rgb_medians = np.stack([item[1] for item in selected])
     lab_medians = np.stack([item[2] for item in selected])
-    return rgb_medians, lab_medians, len(selected)
+    return rgb_medians, lab_medians, len(selected), stats
 
 
 def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> RegionSkinResult:
@@ -245,6 +292,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
     region_luminance_bounds = (
         float(np.percentile(raw_luminance, LUMINANCE_LOWER_PERCENTILE)),
         float(np.percentile(raw_luminance, LUMINANCE_UPPER_PERCENTILE)),
+        float(np.percentile(raw_luminance, 25)),
+        float(np.percentile(raw_luminance, 75)),
     )
     valid_pixels_rgb, valid_lab = _filter_skin_pixels(pixels)
     valid_count = int(len(valid_pixels_rgb))
@@ -284,7 +333,7 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             warnings=warnings,
         )
 
-    patch_rgb, patch_lab, stable_patch_count = _stable_patch_medians(
+    patch_rgb, patch_lab, stable_patch_count, patch_stats = _stable_patch_medians(
         image_rgb, mask, region_luminance_bounds=region_luminance_bounds
     )
     patch_fallback_used = len(patch_rgb) == 0
@@ -316,8 +365,11 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             1.0,
         )
     )
+    specular_highlight_detected = patch_stats["highlight_patches_rejected"] > 0 or highlight_ratio >= HIGHLIGHT_INFLUENCE_RATIO
     if makeup_influence_detected:
         warnings.append(f"{name.replace('_', ' ').title()}: possible makeup/highlight influence detected.")
+    if specular_highlight_detected:
+        warnings.append(f"{name.replace('_', ' ').title()}: possible specular highlight influence detected.")
 
     return RegionSkinResult(
         name=name,
@@ -334,6 +386,10 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         shadow_highlight_ratio=shadow_highlight_ratio,
         reliability_score=reliability_score,
         makeup_influence_detected=makeup_influence_detected,
+        specular_highlight_detected=specular_highlight_detected,
+        highlight_patches_rejected=patch_stats["highlight_patches_rejected"],
+        shadow_patches_rejected=patch_stats["shadow_patches_rejected"],
+        midtone_patch_count=patch_stats["midtone_patch_count"],
         warnings=warnings,
     )
 
@@ -355,6 +411,22 @@ def _region_consistency(regions: list) -> float:
 def _lab_distance(a, b) -> float:
     _assert_skimage_lab_scale(np.array([a, b], dtype=np.float64))
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
+
+
+def _estimate_depth_from_lab_l(l_value: float) -> str:
+    if l_value >= 85:
+        return "fair"
+    if l_value >= 75:
+        return "light"
+    if l_value >= 65:
+        return "light-medium"
+    if l_value >= 55:
+        return "medium"
+    if l_value >= 45:
+        return "tan"
+    if l_value >= 32:
+        return "deep"
+    return "rich-deep"
 
 
 def _cheek_anchor_lab(reliable_by_name: dict):
@@ -439,18 +511,13 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     if jawline is not None:
         delta_e = _lab_distance(jawline.median_lab, anchor_lab)
         darkness_gap = anchor_lab[0] - jawline.median_lab[0]
-        quality_concern = (
-            jawline.lab_std > JAWLINE_HIGH_LAB_STD
-            or jawline.valid_ratio < JAWLINE_LOW_VALID_RATIO
-            or darkness_gap > JAWLINE_DARKNESS_L_THRESHOLD
-        )
-        if delta_e > JAWLINE_DELTA_E_DOWNWEIGHT_THRESHOLD or (
-            delta_e > JAWLINE_QUALITY_DELTA_E_THRESHOLD and quality_concern
-        ):
+        contamination_concern = _jawline_has_contamination_concern(jawline)
+        if delta_e > JAWLINE_QUALITY_DELTA_E_THRESHOLD and contamination_concern:
             jawline.weight_multiplier = JAWLINE_DOWNWEIGHT_FACTOR
             jawline.downweight_reason = (
                 f"Jawline differs from cheek tone (Delta E {delta_e:.1f}, L difference {darkness_gap:.1f}); "
-                "its weight in the final estimate was reduced (possible chin/neck shadow, "
+                "its weight in the final estimate was reduced because contamination signals were present "
+                "(possible chin/neck shadow, "
                 "contour, occlusion, or uneven lighting)."
             )
             warnings.append(jawline.downweight_reason)
@@ -464,6 +531,8 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
                 continue
             dist = _lab_distance(region.median_lab, anchor_lab)
             if dist > OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE:
+                if name == JAWLINE_NAME and not _jawline_has_contamination_concern(region):
+                    continue
                 region.weight_multiplier *= 0.5
                 reason = (
                     f"{name.title()} differs from two agreeing cheeks (Lab distance {dist:.1f}); "
@@ -502,8 +571,22 @@ def _cheek_area_balance(region_results: dict) -> tuple[float, str | None]:
     return balance, None
 
 
+def _jawline_has_contamination_concern(jawline: RegionSkinResult) -> bool:
+    return (
+        jawline.lab_std > JAWLINE_HIGH_LAB_STD
+        or jawline.valid_ratio < JAWLINE_LOW_VALID_RATIO
+        or jawline.shadow_highlight_ratio > 0.25
+        or jawline.reliability_score < REGION_RELIABILITY_THRESHOLD
+        or jawline.specular_highlight_detected
+    )
+
+
 def _region_base_weight(region_name: str) -> float:
-    return 1.0 if region_name in CHEEK_NAMES else OPTIONAL_REGION_BASE_WEIGHT
+    if region_name in CHEEK_NAMES:
+        return 1.0
+    if region_name == JAWLINE_NAME:
+        return 0.75
+    return OPTIONAL_REGION_BASE_WEIGHT
 
 
 def _adjusted_region_consistency(regions: list, reliable_by_name: dict) -> float:
@@ -552,7 +635,17 @@ def _build_extraction_quality_reasons(region_results: dict, skin_result_fields: 
             reasons.append(
                 f"{name.replace('_', ' ').title()}: used {region.stable_patch_count} stable patch(es)."
             )
-        elif region.patch_fallback_used and region.median_rgb is not None:
+        if region.midtone_patch_count > 0:
+            reasons.append(
+                f"{name.replace('_', ' ').title()}: used {region.midtone_patch_count} diffuse mid-tone patch(es)."
+            )
+        if region.highlight_patches_rejected > 0:
+            reasons.append(
+                "Bright highlight patches were excluded so the recommendation is based on diffuse skin tone rather than shine."
+            )
+        if region.specular_highlight_detected:
+            reasons.append(f"{name.replace('_', ' ').title()}: possible specular highlight influence detected.")
+        if region.patch_fallback_used and region.median_rgb is not None:
             reasons.append(
                 f"{name.replace('_', ' ').title()}: used full-region median fallback."
             )
@@ -566,6 +659,9 @@ def _build_extraction_quality_reasons(region_results: dict, skin_result_fields: 
         reasons.append("Fewer than 3 regions were usable, so extraction confidence is reduced slightly.")
     if skin_result_fields.get("cheek_area_balance", 1.0) < CHEEK_AREA_IMBALANCE_WARNING_RATIO:
         reasons.append("Cheek valid-area imbalance reduced confidence slightly.")
+    jawline = region_results.get(JAWLINE_NAME)
+    if jawline is not None and jawline.reliable and not jawline.excluded and jawline.weight_multiplier >= 0.75:
+        reasons.append("Jawline/lower-cheek patches supported the shade depth estimate.")
     return reasons
 
 
@@ -623,6 +719,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 included_region_names=[],
                 excluded_region_names=[n for n, r in region_results.items() if r.excluded],
                 extraction_quality_reasons=[],
+                depth_estimate=None,
                 warnings=warnings,
                 success=False,
             )
@@ -646,6 +743,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     final_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
     final_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
+    depth_estimate = _estimate_depth_from_lab_l(float(final_lab[0]))
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
     avg_valid_ratio = float(np.mean([r.valid_ratio for r in region_results.values()])) if region_results else 0.0
@@ -685,6 +783,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         included_region_names=included_region_names,
         excluded_region_names=excluded_region_names,
         extraction_quality_reasons=extraction_quality_reasons,
+        depth_estimate=depth_estimate,
         warnings=warnings,
         success=True,
     )

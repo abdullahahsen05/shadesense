@@ -23,6 +23,11 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Valid pixels:" in page_text
     assert "Reliability score:" in page_text
     assert "Shadow/highlight ratio:" in page_text
+    assert "Highlight patches rejected:" in page_text
+    assert "Shadow patches rejected:" in page_text
+    assert "Mid-tone patches used:" in page_text
+    assert "Jawline reduction reason:" in page_text
+    assert "Final depth estimate:" in page_text
     assert "Color Correction Diagnostics" in page_text
     assert "Selected extraction source:" in page_text
     assert "Selection reason:" in page_text
