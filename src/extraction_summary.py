@@ -61,6 +61,8 @@ def build_skin_extraction_summary(skin_result, lighting_quality, extraction_sele
         if patch_voting.get("used")
         else ""
     )
+    stability = getattr(skin_result, "stability_diagnostics", {}) or {}
+    stability_text = stability.get("summary", "")
 
     reliability = _reliability_label(float(getattr(skin_result, "quality_score", 0.0)))
     source = getattr(extraction_selection, "selected_source", "auto")
@@ -83,7 +85,7 @@ def build_skin_extraction_summary(skin_result, lighting_quality, extraction_sele
         f"Supporting regions: {supporting_text}. "
         f"Excluded regions: {excluded}. "
         f"Reduced-weight regions: {reduced_text}. "
-        f"{lighting_text} {highlight_text} {patch_voting_text} "
+        f"{lighting_text} {highlight_text} {patch_voting_text} {stability_text} "
         f"Final extraction source: {source_text}. "
         f"Final depth estimate: {skin_result.depth_estimate or 'unknown'}. "
         f"The system trusts this result because {confidence_reason}. "

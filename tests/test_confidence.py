@@ -23,11 +23,18 @@ class FakeSkinResult:
         avg_valid_pixel_ratio,
         cheek_area_balance=1.0,
         usable_region_count=4,
+        stability_score=100.0,
     ):
         self.region_consistency = region_consistency
         self.avg_valid_pixel_ratio = avg_valid_pixel_ratio
         self.cheek_area_balance = cheek_area_balance
         self.usable_region_count = usable_region_count
+        self.stability_diagnostics = {
+            "stability_score": stability_score,
+            "warnings": ["Region stability was fair; jawline had stronger influence, so confidence was reduced."]
+            if stability_score < 70
+            else [],
+        }
 
 
 class FakeLighting:
@@ -115,6 +122,22 @@ def test_asymmetric_cheek_area_warns_and_slightly_penalizes_confidence():
     imbalanced = compute_confidence([_match(5.0)], imbalanced_qr)[0]
     assert imbalanced.confidence < balanced.confidence
     assert any("cheek" in w.lower() for w in imbalanced_qr.warnings)
+
+
+def test_region_stability_lowers_confidence_slightly():
+    matches = [_match(5.0), _match(9.0)]
+    stable_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9, stability_score=95.0), FakeFaceResult([]), matches
+    )
+    unstable_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9, stability_score=45.0), FakeFaceResult([]), matches
+    )
+    stable = compute_confidence([_match(5.0)], stable_qr)[0]
+    unstable = compute_confidence([_match(5.0)], unstable_qr)[0]
+
+    assert unstable.confidence < stable.confidence
+    assert unstable.confidence_breakdown["region_stability_penalty"] > stable.confidence_breakdown["region_stability_penalty"]
+    assert any("region stability" in warning.lower() for warning in unstable_qr.warnings)
 
 
 def test_close_match_tie_warning_and_explanation_wording():

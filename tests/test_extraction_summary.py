@@ -33,6 +33,10 @@ def test_skin_extraction_summary_includes_regions_source_and_reliability():
         included_region_names=["left_cheek", "jawline"],
         excluded_region_names=["forehead"],
         patch_voting_diagnostics={"used": True},
+        stability_diagnostics={
+            "stability_label": "good",
+            "summary": "Region stability was good; removing any one trusted region did not significantly change the final tone.",
+        },
         depth_estimate="tan",
     )
     skin.region_results["left_cheek"].role = "trusted"
@@ -51,6 +55,7 @@ def test_skin_extraction_summary_includes_regions_source_and_reliability():
     assert "Highest-trust regions: Left Cheek" in summary
     assert "Reduced-weight regions: Jawline" in summary
     assert "Final skin tone was aggregated from stable diffuse patches across trusted regions." in summary
+    assert "Region stability was good" in summary
     assert "Excluded regions: Forehead" in summary
     assert "Final extraction source: original" in summary
     assert "Final depth estimate: tan" in summary

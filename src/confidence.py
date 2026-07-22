@@ -39,6 +39,7 @@ class QualityReport:
     lighting_quality: float = 1.0
     cheek_area_balance: float = 1.0
     usable_region_count: int = 0
+    region_stability: float = 1.0
     close_match_tie: bool = False
     warnings: list = field(default_factory=list)
 
@@ -97,6 +98,10 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
     usable_region_count = int(getattr(skin_result, "usable_region_count", 0))
     if 0 < usable_region_count < 3:
         warnings.append("Fewer than 3 skin regions were usable; confidence is reduced slightly.")
+    stability_diagnostics = getattr(skin_result, "stability_diagnostics", {}) or {}
+    region_stability = float(np.clip(stability_diagnostics.get("stability_score", 100.0) / 100.0, 0.0, 1.0))
+    if region_stability < 0.7:
+        warnings.extend(stability_diagnostics.get("warnings", []))
     lighting_score = float(np.clip(getattr(lighting_quality, "score", 1.0), 0.0, 1.0))
     if lighting_quality is not None:
         warnings.extend(getattr(lighting_quality, "warnings", []))
@@ -109,6 +114,7 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
         top_match_separation=separation,
         cheek_area_balance=cheek_area_balance,
         usable_region_count=usable_region_count,
+        region_stability=region_stability,
         close_match_tie=close_match_tie,
         warnings=warnings,
     )
@@ -135,6 +141,7 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
         raw_confidence -= 0.04 * (1.0 - quality_report.cheek_area_balance)
         if 0 < quality_report.usable_region_count < 3:
             raw_confidence -= 0.03 * (3 - quality_report.usable_region_count)
+        raw_confidence -= 0.04 * (1.0 - quality_report.region_stability)
         match.confidence = float(np.clip(raw_confidence, CONFIDENCE_FLOOR, CONFIDENCE_CEILING))
         match.confidence_breakdown = {
             "color_distance_contribution": contributions["color_distance"],
@@ -147,5 +154,6 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
             "usable_region_penalty": 0.03 * (3 - quality_report.usable_region_count)
             if 0 < quality_report.usable_region_count < 3
             else 0.0,
+            "region_stability_penalty": 0.04 * (1.0 - quality_report.region_stability),
         }
     return matches

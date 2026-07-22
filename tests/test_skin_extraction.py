@@ -532,6 +532,44 @@ def test_patch_voting_final_lab_and_rgb_are_valid_ranges():
     assert "dominant_region_contribution" in skin.patch_voting_diagnostics
 
 
+def test_stable_regions_produce_high_region_stability_score():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    skin = extract_skin_tone(image, masks)
+    stability = skin.stability_diagnostics
+
+    assert 0.0 <= stability["stability_score"] <= 100.0
+    assert stability["stability_score"] >= 85
+    assert stability["stability_label"] == "excellent"
+    assert stability["unstable_regions"] == []
+    assert "removing any one trusted region" in stability["summary"]
+
+
+def test_outlier_region_lowers_stability_and_identifies_most_influential_region():
+    image, masks = _synthetic_scene(
+        forehead_rgb=HAIR_CONTAMINATED_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=(90, 55, 38),
+    )
+    skin = extract_skin_tone(image, masks)
+    stability = skin.stability_diagnostics
+
+    assert stability["stability_score"] < 50
+    assert stability["stability_label"] in {"fair", "poor"}
+    assert stability["most_influential_region"] == max(
+        stability["leave_one_out_delta_e"],
+        key=stability["leave_one_out_delta_e"].get,
+    )
+    assert stability["unstable_regions"]
+    assert any("region stability was" in warning.lower() for warning in skin.warnings)
+    assert any("confidence was reduced" in reason.lower() for reason in skin.extraction_quality_reasons)
+
+
 def test_region_reliability_score_reflects_patch_and_valid_pixel_quality():
     image, masks = _synthetic_scene(
         forehead_rgb=SIMILAR_FOREHEAD_RGB,

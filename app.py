@@ -286,6 +286,26 @@ if uploaded_file is not None:
             st.caption(f"Dominant/trusted region contribution: {patch_diag.get('dominant_region_contribution', 'none')}")
             if patch_diag.get("fallback_reason"):
                 st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")
+            stability_diag = skin_result.stability_diagnostics or {}
+            st.markdown("**Region Stability Analysis**")
+            st.caption(f"Region stability score: {stability_diag.get('stability_score', 0):.0f}/100")
+            st.caption(f"Region stability label: {stability_diag.get('stability_label', 'unknown')}")
+            st.caption(
+                "Most influential region: "
+                f"{str(stability_diag.get('most_influential_region', 'none')).replace('_', ' ').title()}"
+            )
+            st.caption(f"Stability summary: {stability_diag.get('summary', 'not available')}")
+            leave_one_out = stability_diag.get("leave_one_out_delta_e", {})
+            if leave_one_out:
+                st.table(
+                    [
+                        {
+                            "Left out region": name.replace("_", " ").title(),
+                            "Delta E shift": f"{delta:.2f}",
+                        }
+                        for name, delta in leave_one_out.items()
+                    ]
+                )
             for region_name, region in skin_result.region_results.items():
                 st.markdown(f"**{region_name.replace('_', ' ').title()}**")
                 if region.median_rgb is not None:

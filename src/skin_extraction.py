@@ -129,6 +129,7 @@ class SkinToneResult:
     excluded_region_names: list = field(default_factory=list)
     extraction_quality_reasons: list = field(default_factory=list)
     patch_voting_diagnostics: dict = field(default_factory=dict)
+    stability_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None
@@ -869,6 +870,123 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
     return final_rgb, tuple(final_lab_array.tolist()), diagnostics
 
 
+def _weighted_region_blend(combination_regions: list) -> tuple[tuple, tuple]:
+    weights = np.array(
+        [
+            r.valid_pixel_count * r.weight_multiplier * _region_base_weight(r.name)
+            for r in combination_regions
+        ],
+        dtype=np.float64,
+    )
+    if weights.sum() <= 0:
+        weights = np.ones(len(combination_regions), dtype=np.float64)
+    weights = weights / weights.sum()
+
+    rgb_stack = np.array([r.median_rgb for r in combination_regions], dtype=np.float64)
+    lab_stack = np.array([r.median_lab for r in combination_regions], dtype=np.float64)
+    blended_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
+    blended_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
+    return blended_rgb, blended_lab
+
+
+def _final_color_from_regions(combination_regions: list) -> tuple[tuple, tuple, dict]:
+    region_blend_rgb, region_blend_lab = _weighted_region_blend(combination_regions)
+    patch_rgb, patch_lab, patch_voting_diagnostics = _aggregate_patch_candidates(combination_regions)
+    if patch_rgb is not None and patch_lab is not None:
+        return patch_rgb, patch_lab, patch_voting_diagnostics
+    return region_blend_rgb, region_blend_lab, patch_voting_diagnostics
+
+
+def _stability_label(score: float) -> str:
+    if score >= 85:
+        return "excellent"
+    if score >= 70:
+        return "good"
+    if score >= 50:
+        return "fair"
+    return "poor"
+
+
+def _region_stability_summary(label: str, most_influential_region: str | None) -> str:
+    if label in {"excellent", "good"}:
+        return (
+            f"Region stability was {label}; removing any one trusted region did not "
+            "significantly change the final tone."
+        )
+    region_text = (
+        most_influential_region.replace("_", " ").title()
+        if most_influential_region
+        else "one region"
+    )
+    return (
+        f"Region stability was {label}; {region_text} had stronger influence, "
+        "so confidence was reduced."
+    )
+
+
+def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> dict:
+    diagnostics = {
+        "stability_score": 100.0,
+        "stability_label": "excellent",
+        "most_influential_region": "none",
+        "unstable_regions": [],
+        "leave_one_out_delta_e": {},
+        "warnings": [],
+        "reasons": [],
+        "summary": "Region stability was excellent; removing any one trusted region did not significantly change the final tone.",
+    }
+    if len(combination_regions) < 3:
+        diagnostics.update(
+            {
+                "stability_score": 70.0 if len(combination_regions) == 2 else 55.0,
+                "stability_label": "good" if len(combination_regions) == 2 else "fair",
+                "summary": "Region stability was limited because fewer than three usable regions were available.",
+                "reasons": ["Fewer than three usable regions limited leave-one-region-out analysis."],
+            }
+        )
+        return diagnostics
+
+    full_lab = np.array(final_lab, dtype=np.float64)
+    deltas: dict[str, float] = {}
+    for region in combination_regions:
+        remaining = [r for r in combination_regions if r.name != region.name]
+        if not remaining:
+            continue
+        _, subset_lab, _ = _final_color_from_regions(remaining)
+        deltas[region.name] = _lab_distance(full_lab, subset_lab)
+
+    if not deltas:
+        return diagnostics
+
+    max_delta = max(deltas.values())
+    avg_delta = float(np.mean(list(deltas.values())))
+    most_influential_region = max(deltas, key=deltas.get)
+    unstable_regions = [name for name, delta in deltas.items() if delta >= 8.0]
+    score = float(np.clip(100.0 - max_delta * 5.5 - avg_delta * 1.5, 0.0, 100.0))
+    label = _stability_label(score)
+    summary = _region_stability_summary(label, most_influential_region)
+    warnings = []
+    if unstable_regions or label in {"fair", "poor"}:
+        warnings.append(summary)
+
+    diagnostics.update(
+        {
+            "stability_score": score,
+            "stability_label": label,
+            "most_influential_region": most_influential_region,
+            "unstable_regions": unstable_regions,
+            "leave_one_out_delta_e": {name: round(delta, 2) for name, delta in deltas.items()},
+            "warnings": warnings,
+            "reasons": [
+                f"Maximum leave-one-region-out shift was {max_delta:.1f} Delta E.",
+                f"Average leave-one-region-out shift was {avg_delta:.1f} Delta E.",
+            ],
+            "summary": summary,
+        }
+    )
+    return diagnostics
+
+
 def _adjusted_region_consistency(regions: list, reliable_by_name: dict) -> float:
     consistency = _region_consistency(regions)
     if not _both_cheeks_agree(reliable_by_name):
@@ -1012,30 +1130,12 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         )
         combination_regions = fallback_regions
 
-    weights = np.array(
-        [
-            r.valid_pixel_count * r.weight_multiplier * _region_base_weight(r.name)
-            for r in combination_regions
-        ],
-        dtype=np.float64,
-    )
-    weights = weights / weights.sum()
-
-    rgb_stack = np.array([r.median_rgb for r in combination_regions], dtype=np.float64)
-    lab_stack = np.array([r.median_lab for r in combination_regions], dtype=np.float64)
-
-    region_blend_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
-    region_blend_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
-    patch_rgb, patch_lab, patch_voting_diagnostics = _aggregate_patch_candidates(combination_regions)
-    if patch_rgb is not None and patch_lab is not None:
-        final_rgb = patch_rgb
-        final_lab = patch_lab
-    else:
-        final_rgb = region_blend_rgb
-        final_lab = region_blend_lab
-        if patch_voting_diagnostics.get("fallback_reason"):
-            warnings.append(patch_voting_diagnostics["fallback_reason"])
+    final_rgb, final_lab, patch_voting_diagnostics = _final_color_from_regions(combination_regions)
+    if not patch_voting_diagnostics.get("used") and patch_voting_diagnostics.get("fallback_reason"):
+        warnings.append(patch_voting_diagnostics["fallback_reason"])
     depth_diagnostic = build_skin_depth_diagnostic(final_lab)
+    stability_diagnostics = _analyze_region_stability(combination_regions, final_lab)
+    warnings.extend(stability_diagnostics.get("warnings", []))
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
     avg_valid_ratio = float(np.mean([r.valid_ratio for r in region_results.values()])) if region_results else 0.0
@@ -1055,6 +1155,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     quality_score = float(
         np.clip(0.45 * consistency + 0.4 * avg_valid_ratio + 0.15 * region_count_score, 0.0, 1.0)
     )
+    stability_score = float(stability_diagnostics.get("stability_score", 100.0)) / 100.0
+    if stability_score < 0.85:
+        quality_score = float(np.clip(quality_score * (0.92 + 0.08 * stability_score), 0.0, 1.0))
     quality_fields = {
         "included_region_names": included_region_names,
         "excluded_region_names": excluded_region_names,
@@ -1068,6 +1171,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         )
     elif patch_voting_diagnostics.get("fallback_reason"):
         extraction_quality_reasons.append(patch_voting_diagnostics["fallback_reason"])
+    extraction_quality_reasons.append(stability_diagnostics["summary"])
 
     return SkinToneResult(
         rgb=final_rgb,
@@ -1082,6 +1186,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         excluded_region_names=excluded_region_names,
         extraction_quality_reasons=extraction_quality_reasons,
         patch_voting_diagnostics=patch_voting_diagnostics,
+        stability_diagnostics=stability_diagnostics,
         depth_estimate=depth_diagnostic.depth_category,
         ita_degrees=depth_diagnostic.ita_degrees,
         ita_category=depth_diagnostic.ita_category,
