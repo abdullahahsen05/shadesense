@@ -139,11 +139,25 @@ if uploaded_file is not None:
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Lab: {lab_rounded}")
             for region_name, region in skin_result.region_results.items():
+                patch_note = (
+                    f", {region.stable_patch_count} stable patches"
+                    if region.stable_patch_count
+                    else ", full-region fallback"
+                    if region.patch_fallback_used and region.median_rgb is not None
+                    else ""
+                )
                 st.caption(
                     f"{region_name.replace('_', ' ').title()}: "
                     f"{region.valid_pixel_count}/{region.total_pixel_count} valid px "
-                    f"({region.status_label})"
+                    f"({region.status_label}{patch_note})"
                 )
+
+        st.subheader("Extraction Quality Reasons")
+        if skin_result.extraction_quality_reasons:
+            for reason in skin_result.extraction_quality_reasons:
+                st.caption(reason)
+        else:
+            st.caption("No additional extraction quality caveats.")
 
         st.subheader("Regions Used for Final Estimate")
         included_labels = [n.replace("_", " ").title() for n in skin_result.included_region_names]

@@ -9,6 +9,8 @@ from src.skin_extraction import (
     JAWLINE_DOWNWEIGHT_FACTOR,
     MIN_VALID_PIXELS_PER_REGION,
     extract_skin_tone,
+    _filter_skin_pixels,
+    _stable_patch_medians,
 )
 
 SAMPLES = PROJECT_ROOT / "data" / "sample_images"
@@ -174,6 +176,67 @@ def test_asymmetric_cheek_valid_area_warns_without_excluding_cheeks():
     assert any("cheek area imbalance" in w.lower() for w in skin.warnings)
     assert skin.region_results["left_cheek"].excluded is False
     assert skin.region_results["right_cheek"].excluded is False
+
+
+def test_best_patch_extraction_rejects_noisy_high_variance_patches():
+    rng = np.random.default_rng(7)
+    image = rng.integers(0, 255, size=(80, 80, 3), dtype=np.uint8)
+    mask = np.ones((80, 80), dtype=np.uint8) * 255
+    stable_rgb = np.array([180, 135, 105], dtype=np.uint8)
+    image[0:18, 0:18] = stable_rgb
+    image[0:18, 24:42] = stable_rgb + np.array([2, 1, 0], dtype=np.uint8)
+
+    patch_rgb, patch_lab, stable_count = _stable_patch_medians(image, mask)
+
+    assert stable_count >= 2
+    assert len(patch_lab) >= 2
+    assert np.linalg.norm(np.median(patch_rgb, axis=0) - stable_rgb) < 8
+
+
+def test_best_patch_extraction_falls_back_safely_when_too_few_patches_survive():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    masks["left_cheek"][:, :] = 0
+    masks["left_cheek"][30:40, 0:12] = 255
+
+    skin = extract_skin_tone(image, masks)
+
+    left = skin.region_results["left_cheek"]
+    assert left.patch_fallback_used is True
+    assert left.median_rgb is not None
+    assert skin.success
+
+
+def test_dark_pixel_filtering_keeps_valid_deep_skin_tones():
+    deep_skin = np.tile(np.array([[70, 45, 34]], dtype=np.uint8), (500, 1))
+    shadow = np.tile(np.array([[5, 4, 4]], dtype=np.uint8), (50, 1))
+    pixels = np.vstack([deep_skin, shadow])
+
+    valid_rgb, _ = _filter_skin_pixels(pixels)
+
+    assert len(valid_rgb) >= 450
+    assert np.median(valid_rgb[:, 0]) >= 60
+
+
+def test_extraction_quality_reasons_mention_only_actual_factors():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    skin = extract_skin_tone(image, masks)
+    text = " ".join(skin.extraction_quality_reasons).lower()
+
+    assert "included regions" in text
+    assert "stable patch" in text
+    assert "not-used regions" not in text
+    assert "reduced-weight regions" not in text
+    assert "fewer than 3 regions" not in text
 
 
 def test_excluded_region_status_label_never_says_reliable():
