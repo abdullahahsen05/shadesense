@@ -11,6 +11,7 @@ from src.color_correction import apply_mild_color_correction, correction_setting
 from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
+from src.extraction_summary import build_skin_extraction_summary
 from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
 from src.lighting_quality import analyze_lighting_quality
@@ -196,6 +197,9 @@ if uploaded_file is not None:
                     f"{region.valid_pixel_count}/{region.total_pixel_count} valid px "
                     f"({region.status_label}{patch_note})"
                 )
+
+        st.subheader("Skin Extraction Summary")
+        st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
 
         with st.expander("Color Correction Diagnostics"):
             st.caption("Color Correction Diagnostics")

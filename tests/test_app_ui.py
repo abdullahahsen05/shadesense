@@ -49,6 +49,9 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Estimated ITA:" in page_text
     assert "Estimated skin-depth category:" in page_text
     assert "Depth sanity:" in page_text
+    assert "Skin Extraction Summary" in page_text
+    assert "Extraction reliability:" in page_text
+    assert "Trusted regions used:" in page_text
 
 
 def test_capture_guidance_text_exists():
