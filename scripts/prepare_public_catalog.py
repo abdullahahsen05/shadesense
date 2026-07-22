@@ -34,6 +34,41 @@ PRODUCT_COLUMNS = ["product", "product_name", "productName", "title", "descripti
 SHADE_COLUMNS = ["name", "shade", "shade_name", "shadeName", "specific", "imgAlt", "description"]
 HEX_COLUMNS = ["hex", "HEX", "Hex", "color_hex", "colour_hex", "swatch_hex"]
 URL_COLUMNS = ["url", "source_url", "sourceUrl", "product_url", "productUrl", "imgSrc", "image", "image_url"]
+COMPLEXION_INCLUDE_TERMS = [
+    "foundation",
+    "skin tint",
+    "tinted moisturizer",
+    "tinted moisturiser",
+    "complexion",
+    "base",
+    "concealer",
+    "bb",
+    "cc",
+    "cushion",
+    "cover drops",
+    "cover cream",
+    "cover creme",
+    "makeup",
+    "teint",
+    "tint",
+]
+NON_COMPLEXION_EXCLUDE_TERMS = [
+    "lipstick",
+    "lip gloss",
+    "mascara",
+    "eyeliner",
+    "eyeshadow",
+    "eye shadow",
+    "brow pencil",
+    "brow gel",
+    "brow pomade",
+    "blush",
+    "bronzer",
+    "highlighter",
+    "fragrance",
+    "perfume",
+    "nail polish",
+]
 
 
 @dataclass
@@ -45,6 +80,7 @@ class PrepareSummary:
     valid_rows_written: int = 0
     skipped_rows: int = 0
     duplicate_rows_removed: int = 0
+    non_complexion_rows_skipped: int = 0
     brand_count: int = 0
     product_count: int = 0
     shade_count: int = 0
@@ -124,6 +160,18 @@ def _clean_text(value, fallback: str) -> str:
     return text if text else fallback
 
 
+def looks_like_complexion_product(*values) -> bool:
+    """Conservatively identify rows that look relevant to base complexion."""
+    text = " ".join(str(v).lower() for v in values if not pd.isna(v))
+    has_complexion_signal = any(term in text for term in COMPLEXION_INCLUDE_TERMS)
+    has_non_complexion_signal = any(term in text for term in NON_COMPLEXION_EXCLUDE_TERMS)
+    if has_complexion_signal:
+        return True
+    if has_non_complexion_signal:
+        return False
+    return False
+
+
 def _shade_name(row: pd.Series, columns: list[str], row_number: int) -> str:
     for col in SHADE_COLUMNS:
         actual = _first_column(columns, [col])
@@ -181,6 +229,13 @@ def _normalize_file(path: Path, summary: PrepareSummary) -> list[dict[str, str]]
             row.get("imgAlt") if "imgAlt" in columns else None,
             row.get("specific") if "specific" in columns else None,
         ]
+        if not looks_like_complexion_product(*text_values):
+            summary.skipped_rows += 1
+            summary.non_complexion_rows_skipped += 1
+            summary.warnings.append(
+                f"{path.name} row {idx + 2}: no base-complexion product signal; skipped."
+            )
+            continue
 
         rows.append(
             {
@@ -249,6 +304,7 @@ def print_summary(summary: PrepareSummary) -> None:
     print(f"Valid rows written: {summary.valid_rows_written}")
     print(f"Skipped rows: {summary.skipped_rows}")
     print(f"Duplicate rows removed: {summary.duplicate_rows_removed}")
+    print(f"Non-complexion rows skipped: {summary.non_complexion_rows_skipped}")
     print(f"Number of brands: {summary.brand_count}")
     print(f"Number of products: {summary.product_count}")
     print(f"Number of shades: {summary.shade_count}")

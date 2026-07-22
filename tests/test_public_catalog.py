@@ -5,6 +5,7 @@ from scripts.prepare_public_catalog import (
     SOURCE_LABEL,
     infer_depth,
     infer_undertone,
+    looks_like_complexion_product,
     normalize_hex,
     prepare_public_catalog,
 )
@@ -39,13 +40,23 @@ def test_infer_depth_from_hex_and_lab_lightness():
     assert infer_depth("#FFFFFF", lightness=0.5) == "tan"
 
 
+def test_complexion_product_filter_keeps_base_and_rejects_obvious_other_makeup():
+    assert looks_like_complexion_product("Longwear Foundation", "warm beige")
+    assert looks_like_complexion_product("Skin Tint SPF 40", "medium neutral")
+    assert looks_like_complexion_product("Foundation + Concealer", "deep")
+    assert looks_like_complexion_product("CC+ Cream with SPF 50+", "tan")
+    assert not looks_like_complexion_product("Matte Lipstick", "red")
+    assert not looks_like_complexion_product("Volumizing Mascara", "black")
+    assert not looks_like_complexion_product("Shimmer Eyeshadow Palette", "bronze")
+
+
 def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
     pd.DataFrame(
         {
             "brand": ["Brand A", "Brand A", "Brand B", "Brand C"],
-            "product": ["Base", "Base", "Tint", "Nope"],
+            "product": ["Base Foundation", "Base Foundation", "Matte Lipstick", "Nope"],
             "description": [
                 "101 warm golden undertone",
                 "101 warm golden undertone",
@@ -68,10 +79,11 @@ def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
     out = pd.read_csv(output_path)
 
     assert summary.total_raw_rows == 5
-    assert summary.valid_rows_written == 2
-    assert summary.skipped_rows == 2
+    assert summary.valid_rows_written == 1
+    assert summary.skipped_rows == 3
     assert summary.duplicate_rows_removed == 1
-    assert len(summary.warnings) == 2
+    assert summary.non_complexion_rows_skipped == 1
+    assert len(summary.warnings) == 3
     assert list(out.columns) == [
         "shade_id",
         "brand",
@@ -85,7 +97,7 @@ def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
     ]
     assert out.iloc[0]["hex"] == "#F1CAAA"
     assert out.iloc[0]["undertone"] == "warm"
-    assert out.iloc[1]["source"] == SOURCE_LABEL
+    assert out.iloc[0]["source"] == SOURCE_LABEL
 
 
 def test_public_catalog_loader_metadata_and_matching(tmp_path):
