@@ -14,6 +14,7 @@ from src.explanation import build_explanation
 from src.extraction_summary import build_skin_extraction_summary
 from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
+from src.image_quality import analyze_image_quality
 from src.lighting_quality import analyze_lighting_quality
 from src.region_masks import build_region_masks
 from src.shade_catalog import (
@@ -99,6 +100,9 @@ if uploaded_file is not None:
         st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
 
     face_result = detect_face_landmarks(corrected_rgb)
+    image_quality = analyze_image_quality(
+        image_rgb, face_result.landmarks if face_result.success else None
+    )
 
     for warning in face_result.warnings:
         st.warning(warning)
@@ -109,6 +113,26 @@ if uploaded_file is not None:
         with st.expander("Lighting correction notes"):
             for note in correction_notes:
                 st.caption(note)
+
+        with st.expander("Image Capture Quality"):
+            st.caption("Image Capture Quality")
+            st.metric("Overall capture quality", f"{image_quality.overall_score:.0f}/100")
+            st.caption(f"Label: {image_quality.label}")
+            metric_cols = st.columns(5)
+            metric_values = [
+                ("Blur", image_quality.blur_score),
+                ("Exposure", image_quality.exposure_score),
+                ("Face size", image_quality.face_size_score),
+                ("Pose", image_quality.pose_score),
+                ("Color cast", image_quality.color_cast_score),
+            ]
+            for metric_col, (label, value) in zip(metric_cols, metric_values):
+                with metric_col:
+                    st.metric(label, f"{value:.0f}/100")
+            for warning in image_quality.warnings:
+                st.warning(warning)
+            for reason in image_quality.reasons:
+                st.caption(reason)
 
         st.subheader("Lighting Quality")
         st.metric("Lighting quality score", f"{lighting_quality.score:.0%}")
