@@ -158,6 +158,24 @@ def test_jawline_full_weight_when_similar_to_cheeks():
     assert jawline.downweight_reason is None
 
 
+def test_asymmetric_cheek_valid_area_warns_without_excluding_cheeks():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    masks["right_cheek"][:, :] = 0
+    masks["right_cheek"][30:36, 50:100] = 255
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.cheek_area_balance < 0.45
+    assert any("cheek area imbalance" in w.lower() for w in skin.warnings)
+    assert skin.region_results["left_cheek"].excluded is False
+    assert skin.region_results["right_cheek"].excluded is False
+
+
 def test_excluded_region_status_label_never_says_reliable():
     image, masks = _synthetic_scene(
         forehead_rgb=HAIR_CONTAMINATED_FOREHEAD_RGB,

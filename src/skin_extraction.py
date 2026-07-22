@@ -28,6 +28,7 @@ FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
 # rather than removes — its weight in the final combination.
 JAWLINE_DARKNESS_L_THRESHOLD = 10.0
 JAWLINE_DOWNWEIGHT_FACTOR = 0.35
+CHEEK_AREA_IMBALANCE_WARNING_RATIO = 0.45
 
 
 @dataclass
@@ -75,6 +76,7 @@ class SkinToneResult:
     quality_score: float
     region_consistency: float = 0.0
     avg_valid_pixel_ratio: float = 0.0
+    cheek_area_balance: float = 1.0
     included_region_names: list = field(default_factory=list)
     excluded_region_names: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
@@ -234,6 +236,31 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     return warnings
 
 
+def _cheek_area_balance(region_results: dict) -> tuple[float, str | None]:
+    """Return valid-area balance between cheeks and a gentle warning if poor."""
+    left = region_results.get("left_cheek")
+    right = region_results.get("right_cheek")
+    if left is None or right is None:
+        return 1.0, None
+    if left.total_pixel_count < MIN_VALID_PIXELS_PER_REGION or right.total_pixel_count < MIN_VALID_PIXELS_PER_REGION:
+        return 1.0, None
+
+    smaller = min(left.valid_pixel_count, right.valid_pixel_count)
+    larger = max(left.valid_pixel_count, right.valid_pixel_count)
+    if larger == 0:
+        return 1.0, None
+
+    balance = smaller / larger
+    if balance < CHEEK_AREA_IMBALANCE_WARNING_RATIO:
+        smaller_name = "left cheek" if left.valid_pixel_count < right.valid_pixel_count else "right cheek"
+        larger_name = "right cheek" if smaller_name == "left cheek" else "left cheek"
+        return balance, (
+            f"Cheek area imbalance detected: the {smaller_name} has much less valid skin area "
+            f"than the {larger_name}. Confidence is reduced slightly, but both cheeks remain usable."
+        )
+    return balance, None
+
+
 def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     """Extract a representative skin color from masked face regions.
 
@@ -258,6 +285,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     reliable_by_name = {name: r for name, r in region_results.items() if r.reliable}
     warnings.extend(_apply_forehead_and_jawline_rules(reliable_by_name))
+    cheek_area_balance, cheek_area_warning = _cheek_area_balance(region_results)
+    if cheek_area_warning:
+        warnings.append(cheek_area_warning)
 
     combination_regions = [r for r in reliable_by_name.values() if not r.excluded]
 
@@ -280,6 +310,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 quality_score=0.0,
                 region_consistency=0.0,
                 avg_valid_pixel_ratio=0.0,
+                cheek_area_balance=cheek_area_balance,
                 included_region_names=[],
                 excluded_region_names=[n for n, r in region_results.items() if r.excluded],
                 warnings=warnings,
@@ -322,6 +353,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         quality_score=quality_score,
         region_consistency=consistency,
         avg_valid_pixel_ratio=avg_valid_ratio,
+        cheek_area_balance=cheek_area_balance,
         included_region_names=included_region_names,
         excluded_region_names=excluded_region_names,
         warnings=warnings,

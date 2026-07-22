@@ -45,7 +45,18 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
             "which adds some uncertainty."
         )
 
-    if rank <= 2 and len(matches) >= 2 and quality_report.top_match_separation < 0.3:
+    if getattr(quality_report, "cheek_area_balance", 1.0) < 0.45:
+        parts.append(
+            "One cheek contributed much less valid skin area than the other, so confidence "
+            "is reduced slightly."
+        )
+
+    if getattr(quality_report, "close_match_tie", False):
+        parts.append(
+            "Close match tie: the top shades are nearly identical in catalog color and "
+            "should be considered equivalent candidates."
+        )
+    elif rank <= 2 and len(matches) >= 2 and quality_report.top_match_separation < 0.3:
         parts.append(
             "The top two recommendations are very close in color, so the exact ranking "
             "between them is uncertain."

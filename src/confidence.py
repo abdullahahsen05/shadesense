@@ -17,6 +17,7 @@ import numpy as np
 
 DELTA_E_TEMPERATURE = 15.0
 SEPARATION_SCALE = 5.0
+NEAR_TIE_DELTA_E_SPREAD = 1.25
 CONFIDENCE_FLOOR = 0.02
 CONFIDENCE_CEILING = 0.93  # never claim near-100% certainty
 
@@ -33,6 +34,8 @@ class QualityReport:
     valid_pixel_ratio: float
     face_quality: float
     top_match_separation: float
+    cheek_area_balance: float = 1.0
+    close_match_tie: bool = False
     warnings: list = field(default_factory=list)
 
 
@@ -71,11 +74,30 @@ def build_quality_report(skin_result, face_result, matches: list) -> QualityRepo
             "confidence is reduced because the best pick is ambiguous."
         )
 
+    close_match_tie = False
+    if len(matches) >= 3:
+        top_three = matches[:3]
+        delta_spread = max(m.delta_e for m in top_three) - min(m.delta_e for m in top_three)
+        close_match_tie = delta_spread <= NEAR_TIE_DELTA_E_SPREAD
+        if close_match_tie:
+            warnings.append(
+                "Close match tie: the top shades are nearly identical in catalog color "
+                "and should be considered equivalent candidates."
+            )
+
+    cheek_area_balance = float(np.clip(getattr(skin_result, "cheek_area_balance", 1.0), 0.0, 1.0))
+    if cheek_area_balance < 0.45:
+        warnings.append(
+            "One cheek has much less valid skin area than the other; confidence is reduced slightly."
+        )
+
     return QualityReport(
         region_consistency=getattr(skin_result, "region_consistency", 0.0),
         valid_pixel_ratio=getattr(skin_result, "avg_valid_pixel_ratio", 0.0),
         face_quality=face_quality,
         top_match_separation=separation,
+        cheek_area_balance=cheek_area_balance,
+        close_match_tie=close_match_tie,
         warnings=warnings,
     )
 
@@ -96,5 +118,6 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
             + WEIGHT_FACE_QUALITY * quality_report.face_quality
             + WEIGHT_TOP_SEPARATION * quality_report.top_match_separation
         )
+        raw_confidence -= 0.04 * (1.0 - quality_report.cheek_area_balance)
         match.confidence = float(np.clip(raw_confidence, CONFIDENCE_FLOOR, CONFIDENCE_CEILING))
     return matches

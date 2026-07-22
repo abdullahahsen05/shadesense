@@ -17,9 +17,10 @@ class FakeFaceResult:
 
 
 class FakeSkinResult:
-    def __init__(self, region_consistency, avg_valid_pixel_ratio):
+    def __init__(self, region_consistency, avg_valid_pixel_ratio, cheek_area_balance=1.0):
         self.region_consistency = region_consistency
         self.avg_valid_pixel_ratio = avg_valid_pixel_ratio
+        self.cheek_area_balance = cheek_area_balance
 
 
 def _match(delta_e, undertone="neutral"):
@@ -87,6 +88,30 @@ def test_face_quality_penalized_for_multi_face_and_small_face():
         FakeSkinResult(1.0, 1.0), FakeFaceResult(["2 faces detected. Using the largest..."]), [_match(1.0), _match(10.0)]
     )
     assert qr_multi.face_quality < qr_clean.face_quality
+
+
+def test_asymmetric_cheek_area_warns_and_slightly_penalizes_confidence():
+    matches = [_match(5.0), _match(9.0)]
+    balanced_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9, cheek_area_balance=1.0), FakeFaceResult([]), matches
+    )
+    imbalanced_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9, cheek_area_balance=0.3), FakeFaceResult([]), matches
+    )
+    balanced = compute_confidence([_match(5.0)], balanced_qr)[0]
+    imbalanced = compute_confidence([_match(5.0)], imbalanced_qr)[0]
+    assert imbalanced.confidence < balanced.confidence
+    assert any("cheek" in w.lower() for w in imbalanced_qr.warnings)
+
+
+def test_close_match_tie_warning_and_explanation_wording():
+    matches = [_match(5.0), _match(5.4), _match(5.9)]
+    qr = build_quality_report(FakeSkinResult(0.9, 0.9), FakeFaceResult([]), matches)
+    assert qr.close_match_tie
+    assert any("Close match tie" in w for w in qr.warnings)
+    text = build_explanation(matches[0], FakeSkinResult(0.9, 0.9), qr, rank=1, matches=matches)
+    assert "Close match tie" in text
+    assert "equivalent candidates" in text
 
 
 def test_explanation_mentions_undertone_and_delta_e():

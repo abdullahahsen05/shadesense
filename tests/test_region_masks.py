@@ -36,7 +36,7 @@ def test_regions_have_reasonable_pixel_counts():
 
 
 def test_regions_do_not_overlap_eyes_lips_significantly():
-    from src.region_masks import EYE_INDICES, LIPS_INDICES, _pts
+    from src.region_masks import EYE_INDICES, LIPS_INDICES, NOSE_INDICES, _pts
 
     img = _load("face_astronaut.png")
     result = detect_face_landmarks(img)
@@ -46,8 +46,18 @@ def test_regions_do_not_overlap_eyes_lips_significantly():
     lips_pts = _pts(result.landmarks, LIPS_INDICES).astype(int)
 
     combined = masks["combined"]
-    for x, y in np.vstack([eye_pts, lips_pts]):
-        assert combined[y, x] == 0, "region mask overlaps an eye/lip landmark"
+    nose_pts = _pts(result.landmarks, NOSE_INDICES).astype(int)
+
+    for x, y in np.vstack([eye_pts, lips_pts, nose_pts]):
+        assert combined[y, x] == 0, "region mask overlaps an eye/lip/nose landmark"
+
+
+def test_cheek_masks_are_reasonably_balanced_on_front_facing_face():
+    masks, _ = _masks_for("face_astronaut.png")
+    left = int((masks["left_cheek"] > 0).sum())
+    right = int((masks["right_cheek"] > 0).sum())
+    balance = min(left, right) / max(left, right)
+    assert balance >= 0.45, f"cheek mask areas too imbalanced: left={left}, right={right}"
 
 
 def test_masks_align_across_pose_and_lighting_variants():

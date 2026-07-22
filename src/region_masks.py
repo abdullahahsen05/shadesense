@@ -52,6 +52,50 @@ def _mask_from_points(points: np.ndarray, image_shape) -> np.ndarray:
     return mask
 
 
+def _x_at_y(points: np.ndarray, y: float, side: str, fallback: float) -> float:
+    """Estimate the face boundary x-coordinate near a y position."""
+    if len(points) == 0:
+        return fallback
+    band = points[np.abs(points[:, 1] - y) <= max(8.0, 0.08 * np.ptp(points[:, 1]))]
+    if len(band) == 0:
+        band = points
+    return float(np.min(band[:, 0]) if side == "left" else np.max(band[:, 0]))
+
+
+def _cheek_polygon_mask(
+    oval_pts: np.ndarray,
+    face_center_x: float,
+    face_width: float,
+    upper_y: float,
+    lower_y: float,
+    side: str,
+    image_shape,
+) -> np.ndarray:
+    """Build a symmetric cheek polygon from face geometry.
+
+    Smile/front-facing expressions can leave too few oval landmarks in the
+    cheek band on one side. This geometry fallback keeps both cheeks similarly
+    sized when visible while later exclusion masks still remove nose/lips/eyes.
+    """
+    sign = -1.0 if side == "left" else 1.0
+    mid_y = (upper_y + lower_y) / 2.0
+    boundary_fallback = face_center_x + sign * 0.43 * face_width
+    outer_x = _x_at_y(oval_pts, mid_y, side, boundary_fallback)
+    inner_x = face_center_x + sign * 0.08 * face_width
+    mid_inner_x = face_center_x + sign * 0.16 * face_width
+
+    points = np.array(
+        [
+            [inner_x, upper_y],
+            [outer_x, upper_y + 0.08 * (lower_y - upper_y)],
+            [outer_x, lower_y],
+            [mid_inner_x, lower_y - 0.05 * (lower_y - upper_y)],
+        ],
+        dtype=np.float64,
+    )
+    return _mask_from_points(points, image_shape)
+
+
 def build_region_masks(image_shape, landmarks) -> dict:
     """Build cheek, forehead, and jawline masks from face landmarks.
 
@@ -134,6 +178,22 @@ def build_region_masks(image_shape, landmarks) -> dict:
     left_cheek_mask = _mask_from_points(left_cheek_points, image_shape)
     right_cheek_mask = _mask_from_points(right_cheek_points, image_shape)
 
+    cheek_upper_y = eye_y + 0.035 * face_height
+    cheek_lower_y = mouth_top_y - 0.035 * face_height
+    if cheek_lower_y > cheek_upper_y:
+        left_cheek_mask = cv2.bitwise_or(
+            left_cheek_mask,
+            _cheek_polygon_mask(
+                oval_pts, face_center_x, face_width, cheek_upper_y, cheek_lower_y, "left", image_shape
+            ),
+        )
+        right_cheek_mask = cv2.bitwise_or(
+            right_cheek_mask,
+            _cheek_polygon_mask(
+                oval_pts, face_center_x, face_width, cheek_upper_y, cheek_lower_y, "right", image_shape
+            ),
+        )
+
     # --- Jawline: oval points below the mouth-bottom line (the chin/jaw arc). ---
     jaw_oval = oval_pts[oval_pts[:, 1] >= mouth_bottom_y + margin_h] if len(oval_pts) else np.empty((0, 2))
     jawline_mask = _mask_from_points(jaw_oval, image_shape)
@@ -141,7 +201,7 @@ def build_region_masks(image_shape, landmarks) -> dict:
     # Remove eyes/eyebrows/lips from every region as a safety net in case the
     # convex hulls above happen to bulge into them.
     exclude_mask = np.zeros((h, w), dtype=np.uint8)
-    for pts in (eye_pts, eyebrow_pts, lips_pts):
+    for pts in (eye_pts, eyebrow_pts, lips_pts, nose_pts):
         if len(pts) >= MIN_POLYGON_POINTS:
             hull = cv2.convexHull(pts.astype(np.int32))
             cv2.fillConvexPoly(exclude_mask, hull, 255)
