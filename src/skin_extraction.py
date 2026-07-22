@@ -131,6 +131,11 @@ class SkinToneResult:
     extraction_quality_reasons: list = field(default_factory=list)
     patch_voting_diagnostics: dict = field(default_factory=dict)
     stability_diagnostics: dict = field(default_factory=dict)
+    foundation_target_rgb: tuple | None = None
+    foundation_target_lab: tuple | None = None
+    foundation_target_active: bool = False
+    foundation_target_reason: str = ""
+    foundation_target_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None
@@ -910,7 +915,9 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         kept_labs = labs[kept_indices]
         kept_weights = adjusted_weights[kept_indices]
 
-    final_lab_array = _foundation_target_lab_from_patches(candidates, kept_indices, kept_weights)
+    measured_lab_array = _weighted_lab_mean(kept_labs, kept_weights)
+    target_lab_array = _foundation_target_lab_from_patches(candidates, kept_indices, kept_weights)
+    final_lab_array = measured_lab_array
     final_rgb = _lab_to_rgb_tuple(final_lab_array)
     region_weight_totals: dict[str, float] = {}
     for idx, weight in zip(kept_indices, kept_weights):
@@ -929,6 +936,8 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
             "foundation_depth_strategy": (
                 "undertone from diffuse cheek patches; depth L* from reliable lower-midtone cheek/jawline patches"
             ),
+            "patch_foundation_target_lab": tuple(target_lab_array.tolist()),
+            "patch_foundation_target_rgb": _lab_to_rgb_tuple(target_lab_array),
         }
     )
     return final_rgb, tuple(final_lab_array.tolist()), diagnostics
@@ -1049,6 +1058,135 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
         }
     )
     return diagnostics
+
+
+def _region_has_highlight_bias(region: RegionSkinResult) -> bool:
+    return (
+        region.specular_highlight_detected
+        or region.highlight_patches_rejected > 0
+        or region.makeup_influence_detected
+    )
+
+
+def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict]:
+    candidates = []
+    for name in (*CHEEK_NAMES, JAWLINE_NAME):
+        region = region_results.get(name)
+        if region is None or not region.reliable or region.excluded or region.median_lab is None:
+            continue
+        if name == JAWLINE_NAME and _jawline_has_contamination_concern(region):
+            continue
+        labs = [
+            np.array(lab, dtype=np.float64)
+            for lab, is_midtone in zip(region.stable_patch_labs, region.stable_patch_midtone_flags)
+            if is_midtone
+        ]
+        weights = [
+            float(score)
+            for score, is_midtone in zip(region.stable_patch_quality_scores, region.stable_patch_midtone_flags)
+            if is_midtone
+        ]
+        if not labs:
+            labs = [np.array(region.median_lab, dtype=np.float64)]
+            weights = [max(region.quality_score / 100.0, 0.2)]
+        for lab, weight in zip(labs, weights):
+            if name == JAWLINE_NAME:
+                weight *= 1.25
+            candidates.append((name, lab, weight))
+
+    diagnostics = {
+        "lower_face_patch_count": len(candidates),
+        "lower_face_regions": list(dict.fromkeys([name for name, _, _ in candidates])),
+    }
+    if len(candidates) < 2 or JAWLINE_NAME not in diagnostics["lower_face_regions"]:
+        return None, diagnostics
+    labs = np.stack([lab for _, lab, _ in candidates])
+    weights = np.array([weight for _, _, weight in candidates], dtype=np.float64)
+    return _weighted_percentile(labs[:, 0], weights, 40.0), diagnostics
+
+
+def _build_foundation_target(
+    measured_rgb: tuple,
+    measured_lab: tuple,
+    region_results: dict,
+    patch_voting_diagnostics: dict,
+    depth_estimate: str | None,
+) -> tuple[tuple, tuple, bool, str, dict]:
+    measured_lab_array = np.array(measured_lab, dtype=np.float64)
+    measured_rgb_tuple = tuple(int(v) for v in measured_rgb)
+    diagnostics = {
+        "criteria": {
+            "deep_or_rich_deep": depth_estimate in {"deep", "rich-deep"},
+            "highlight_influence": False,
+            "central_brighter_than_lower": False,
+            "lower_face_reliable": False,
+        },
+        "measured_lab": tuple(measured_lab_array.tolist()),
+    }
+
+    highlight_regions = [
+        name for name, region in region_results.items() if _region_has_highlight_bias(region)
+    ]
+    diagnostics["highlight_regions"] = highlight_regions
+    diagnostics["criteria"]["highlight_influence"] = bool(highlight_regions)
+
+    lower_l, lower_diag = _lower_face_depth_evidence(region_results)
+    diagnostics.update(lower_diag)
+    diagnostics["lower_face_depth_l"] = lower_l
+    diagnostics["criteria"]["lower_face_reliable"] = lower_l is not None
+
+    central_regions = [
+        region
+        for name, region in region_results.items()
+        if name in (FOREHEAD_NAME, *CHEEK_NAMES) and region.median_lab is not None and region.reliable
+    ]
+    central_l = float(np.mean([region.median_lab[0] for region in central_regions])) if central_regions else measured_lab_array[0]
+    diagnostics["central_face_l"] = central_l
+    if lower_l is not None:
+        diagnostics["central_minus_lower_l"] = central_l - lower_l
+        diagnostics["criteria"]["central_brighter_than_lower"] = (central_l - lower_l) >= 5.0
+    else:
+        diagnostics["central_minus_lower_l"] = 0.0
+
+    target_lab = measured_lab_array.copy()
+    patch_target = patch_voting_diagnostics.get("patch_foundation_target_lab")
+    if patch_target is not None:
+        patch_target_lab = np.array(patch_target, dtype=np.float64)
+        target_lab[1:] = 0.75 * measured_lab_array[1:] + 0.25 * patch_target_lab[1:]
+
+    all_criteria = all(diagnostics["criteria"].values())
+    if not all_criteria:
+        reason = "Foundation target matches measured visible tone; depth-safe adjustment criteria were not all met."
+        diagnostics["active"] = False
+        diagnostics["reason"] = reason
+        return measured_rgb_tuple, tuple(measured_lab_array.tolist()), False, reason, diagnostics
+
+    conservative_l = min(float(measured_lab_array[0]), 0.70 * float(lower_l) + 0.30 * float(measured_lab_array[0]))
+    max_shift = 5.0 if depth_estimate == "rich-deep" else 3.5
+    target_l = max(float(measured_lab_array[0]) - max_shift, conservative_l)
+    if float(measured_lab_array[0]) - target_l < 1.0:
+        reason = "Foundation target matches measured visible tone; lower-face evidence did not support a meaningful deeper target."
+        diagnostics["active"] = False
+        diagnostics["reason"] = reason
+        return measured_rgb_tuple, tuple(measured_lab_array.tolist()), False, reason, diagnostics
+
+    target_lab[0] = target_l
+    target_lab_tuple = tuple(target_lab.tolist())
+    target_rgb = _lab_to_rgb_tuple(target_lab)
+    reason = (
+        "Foundation target was adjusted slightly deeper because highlight influence was detected "
+        "and lower-cheek/jawline patches supported a deeper base tone."
+    )
+    diagnostics.update(
+        {
+            "active": True,
+            "reason": reason,
+            "target_lab": target_lab_tuple,
+            "target_rgb": target_rgb,
+            "l_adjustment": float(measured_lab_array[0] - target_l),
+        }
+    )
+    return target_rgb, target_lab_tuple, True, reason, diagnostics
 
 
 def _adjusted_region_consistency(regions: list, reliable_by_name: dict) -> float:
@@ -1198,6 +1336,21 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     if not patch_voting_diagnostics.get("used") and patch_voting_diagnostics.get("fallback_reason"):
         warnings.append(patch_voting_diagnostics["fallback_reason"])
     depth_diagnostic = build_skin_depth_diagnostic(final_lab)
+    (
+        foundation_target_rgb,
+        foundation_target_lab,
+        foundation_target_active,
+        foundation_target_reason,
+        foundation_target_diagnostics,
+    ) = _build_foundation_target(
+        final_rgb,
+        final_lab,
+        region_results,
+        patch_voting_diagnostics,
+        depth_diagnostic.depth_category,
+    )
+    if foundation_target_active:
+        warnings.append(foundation_target_reason)
     stability_diagnostics = _analyze_region_stability(combination_regions, final_lab)
     warnings.extend(stability_diagnostics.get("warnings", []))
 
@@ -1236,6 +1389,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     elif patch_voting_diagnostics.get("fallback_reason"):
         extraction_quality_reasons.append(patch_voting_diagnostics["fallback_reason"])
     extraction_quality_reasons.append(stability_diagnostics["summary"])
+    extraction_quality_reasons.append(foundation_target_reason)
 
     return SkinToneResult(
         rgb=final_rgb,
@@ -1251,6 +1405,11 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         extraction_quality_reasons=extraction_quality_reasons,
         patch_voting_diagnostics=patch_voting_diagnostics,
         stability_diagnostics=stability_diagnostics,
+        foundation_target_rgb=foundation_target_rgb,
+        foundation_target_lab=foundation_target_lab,
+        foundation_target_active=foundation_target_active,
+        foundation_target_reason=foundation_target_reason,
+        foundation_target_diagnostics=foundation_target_diagnostics,
         depth_estimate=depth_diagnostic.depth_category,
         ita_degrees=depth_diagnostic.ita_degrees,
         ita_category=depth_diagnostic.ita_category,

@@ -27,11 +27,16 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     page_text = _page_text(at)
 
     assert "Region color diagnostics" in page_text
+    assert "Measured visible skin tone:" in page_text
+    assert "Foundation target tone:" in page_text
+    assert "Foundation target Lab:" in page_text
     assert "Forehead" in page_text
     assert "Left Cheek" in page_text
     assert "Right Cheek" in page_text
     assert "Jawline" in page_text
     assert "Final Blended Swatch" in page_text
+    assert "Foundation Target Swatch" in page_text
+    assert "Active for matching:" in page_text
     assert "Stable patches:" in page_text
     assert "Valid pixels:" in page_text
     assert "Reliability score:" in page_text

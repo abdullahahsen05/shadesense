@@ -220,6 +220,30 @@ def test_exact_duplicate_rows_removed_from_variant_list():
     assert hourglass.product_variants[0]["product"] == "Stick"
 
 
+def test_same_brand_product_nearly_identical_hex_similar_shade_names_grouped():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "A2", "B1"],
+            "brand": ["Brand A", "Brand A", "Brand B"],
+            "product": ["Liquid Base", "Liquid Base", "Liquid Base"],
+            "shade_name": ["450N", "450 Neutral", "460N"],
+            "hex": ["#4F3B32", "#503C33", "#5B453A"],
+            "r": [79, 80, 91],
+            "g": [59, 60, 69],
+            "b": [50, 51, 58],
+            "lab_l": [27.0, 27.2, 31.0],
+            "lab_a": [6.0, 6.1, 7.0],
+            "lab_b": [9.0, 9.1, 10.0],
+        }
+    )
+
+    matches = match_shades(np.array([27.0, 6.0, 9.0]), df, top_k=3)
+
+    assert len(matches) == 2
+    assert matches[0].shade_name == "450N"
+    assert [variant["shade_name"] for variant in matches[0].product_variants] == ["450 Neutral"]
+
+
 def test_top_three_returns_distinct_candidates_when_enough_unique_shades_exist():
     df = pd.DataFrame(
         {

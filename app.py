@@ -199,7 +199,13 @@ if uploaded_file is not None:
         with swatch_col:
             if skin_result.success:
                 swatch = make_skin_swatch(skin_result.rgb)
-                st.image(swatch, caption=f"RGB {skin_result.rgb}", width=150)
+                st.image(swatch, caption=f"Measured visible skin tone: RGB {skin_result.rgb}", width=150)
+                if skin_result.foundation_target_active and skin_result.foundation_target_rgb:
+                    st.image(
+                        make_skin_swatch(skin_result.foundation_target_rgb),
+                        caption=f"Foundation target tone: RGB {skin_result.foundation_target_rgb}",
+                        width=150,
+                    )
             else:
                 st.error("Could not extract a usable skin swatch.")
         with detail_col:
@@ -212,7 +218,13 @@ if uploaded_file is not None:
             st.caption(f"Selection reason: {extraction_selection.reason}")
             st.metric("Extraction quality score", f"{skin_result.quality_score:.0%}")
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
-            st.caption(f"Lab: {lab_rounded}")
+            st.caption(f"Measured visible skin tone: RGB {skin_result.rgb}")
+            st.caption(f"Measured visible Lab: {lab_rounded}")
+            target_lab = tuple(round(v, 1) for v in (skin_result.foundation_target_lab or skin_result.lab))
+            st.caption(f"Foundation target tone: RGB {skin_result.foundation_target_rgb or skin_result.rgb}")
+            st.caption(f"Foundation target Lab: {target_lab}")
+            if skin_result.foundation_target_active:
+                st.caption(skin_result.foundation_target_reason)
             if skin_result.ita_degrees is not None:
                 st.caption(f"Estimated ITA: {skin_result.ita_degrees:.1f} deg ({skin_result.ita_category})")
             st.caption(f"Estimated skin-depth category: {skin_result.depth_estimate or 'unknown'}")
@@ -374,6 +386,16 @@ if uploaded_file is not None:
                 st.image(make_skin_swatch(skin_result.rgb), width=90)
                 st.caption(f"RGB: {skin_result.rgb}")
                 st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
+                if skin_result.foundation_target_rgb and skin_result.foundation_target_lab:
+                    st.markdown("**Foundation Target Swatch**")
+                    st.image(make_skin_swatch(skin_result.foundation_target_rgb), width=90)
+                    st.caption(f"RGB: {skin_result.foundation_target_rgb}")
+                    st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.foundation_target_lab)}")
+                    st.caption(f"Active for matching: {'yes' if skin_result.foundation_target_active else 'no'}")
+                    st.caption(f"Reason: {skin_result.foundation_target_reason}")
+                    target_diag = skin_result.foundation_target_diagnostics or {}
+                    st.caption(f"Lower-face depth L*: {target_diag.get('lower_face_depth_l', 'unavailable')}")
+                    st.caption(f"Central minus lower-face L*: {target_diag.get('central_minus_lower_l', 0):.1f}")
                 st.caption(f"Final depth estimate: {skin_result.depth_estimate or 'unknown'}")
 
         st.subheader("Extraction Quality Reasons")
@@ -406,7 +428,8 @@ if uploaded_file is not None:
                 for w in catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
-                matches = match_shades(np.array(skin_result.lab), catalog_df, top_k=TOP_K_SHADES)
+                matching_lab = skin_result.foundation_target_lab if skin_result.foundation_target_active else skin_result.lab
+                matches = match_shades(np.array(matching_lab), catalog_df, top_k=TOP_K_SHADES)
 
                 if not matches:
                     st.error("No shades available to recommend.")

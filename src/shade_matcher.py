@@ -66,6 +66,27 @@ def _rgb_distance(a: tuple, b: tuple) -> float:
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
 
+def _shade_names_similar(a, b) -> bool:
+    a_norm = _normalize_key_text(a)
+    b_norm = _normalize_key_text(b)
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+
+    a_tokens = set(a_norm.split())
+    b_tokens = set(b_norm.split())
+    if a_tokens and b_tokens and len(a_tokens & b_tokens) / max(len(a_tokens | b_tokens), 1) >= 0.5:
+        return True
+
+    a_digits = set(re.findall(r"\d+", a_norm))
+    b_digits = set(re.findall(r"\d+", b_norm))
+    if a_digits and b_digits and a_digits & b_digits:
+        return True
+
+    return False
+
+
 def _depth_distance(estimated_depth: str, catalog_depth) -> int:
     if catalog_depth is None or pd.isna(catalog_depth):
         return 0
@@ -125,7 +146,13 @@ def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, ran
 def _is_same_shade_candidate(candidate: ShadeMatch, existing: ShadeMatch) -> bool:
     if _normalize_key_text(candidate.brand) != _normalize_key_text(existing.brand):
         return False
-    if _normalize_key_text(candidate.shade_name) != _normalize_key_text(existing.shade_name):
+    same_product = _normalize_key_text(candidate.product) == _normalize_key_text(existing.product)
+    similar_shade_name = _shade_names_similar(candidate.shade_name, existing.shade_name)
+    if same_product and similar_shade_name and candidate.hex == existing.hex:
+        return True
+    if same_product and similar_shade_name and _rgb_distance(candidate.rgb, existing.rgb) <= VARIANT_HEX_RGB_DISTANCE:
+        return True
+    if not similar_shade_name:
         return False
     if candidate.hex == existing.hex:
         return True

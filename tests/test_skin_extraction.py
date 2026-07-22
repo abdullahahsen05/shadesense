@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 from PIL import Image
 
@@ -17,6 +18,7 @@ from src.skin_extraction import (
     _stable_patch_medians,
     _to_lab,
 )
+from src.shade_matcher import match_shades
 
 SAMPLES = PROJECT_ROOT / "data" / "sample_images"
 
@@ -378,6 +380,96 @@ def test_rich_deep_skin_with_broad_highlights_does_not_shift_too_light():
     assert skin.lab[0] < 35
     assert skin.depth_estimate == "rich-deep"
     assert any("shine does not make the foundation target too light" in w.lower() for w in skin.warnings)
+
+
+def test_rich_deep_highlights_create_deeper_foundation_target_than_measured_tone():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(70, 45, 34),
+        left_cheek_rgb=(72, 48, 36),
+        right_cheek_rgb=(72, 48, 36),
+        jawline_rgb=(48, 31, 24),
+    )
+    image[0:20, :] = (155, 145, 132)
+    image[30:50, 0:25] = (180, 172, 160)
+    image[30:50, 50:75] = (180, 172, 160)
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.foundation_target_active is True
+    assert skin.foundation_target_lab[0] < skin.lab[0]
+    assert skin.foundation_target_rgb != skin.rgb
+    assert skin.foundation_target_diagnostics["criteria"]["lower_face_reliable"] is True
+    assert "adjusted slightly deeper" in skin.foundation_target_reason.lower()
+
+
+def test_clean_even_lighting_keeps_foundation_target_equal_to_measured_tone():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(70, 45, 34),
+        left_cheek_rgb=(72, 48, 36),
+        right_cheek_rgb=(72, 48, 36),
+        jawline_rgb=(68, 45, 34),
+    )
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.foundation_target_active is False
+    assert skin.foundation_target_lab == skin.lab
+    assert skin.foundation_target_rgb == skin.rgb
+
+
+def test_shadow_contaminated_jawline_does_not_force_foundation_target_darker():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(70, 45, 34),
+        left_cheek_rgb=(72, 48, 36),
+        right_cheek_rgb=(72, 48, 36),
+        jawline_rgb=(20, 12, 10),
+    )
+    image[0:20, :] = (155, 145, 132)
+    image[30:50, 0:25] = (180, 172, 160)
+    image[30:50, 50:75] = (180, 172, 160)
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.foundation_target_active is False
+    assert skin.foundation_target_lab == skin.lab
+    assert skin.foundation_target_diagnostics["criteria"]["lower_face_reliable"] is False
+
+
+def test_depth_safe_foundation_target_prefers_similar_deeper_shade():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(70, 45, 34),
+        left_cheek_rgb=(72, 48, 36),
+        right_cheek_rgb=(72, 48, 36),
+        jawline_rgb=(48, 31, 24),
+    )
+    image[0:20, :] = (155, 145, 132)
+    image[30:50, 0:25] = (180, 172, 160)
+    image[30:50, 50:75] = (180, 172, 160)
+    skin = extract_skin_tone(image, masks)
+
+    measured_l, a, b = skin.lab
+    target_l = skin.foundation_target_lab[0]
+    catalog = pd.DataFrame(
+        {
+            "shade_id": ["too_light", "deeper"],
+            "brand": ["Test", "Test"],
+            "product": ["Base", "Base"],
+            "shade_name": ["Too Light", "Similar Deeper"],
+            "hex": ["#6B554A", "#4F3B32"],
+            "r": [107, 79],
+            "g": [85, 59],
+            "b": [74, 50],
+            "lab_l": [measured_l, target_l + 0.3],
+            "lab_a": [a, a],
+            "lab_b": [b, b],
+            "depth": ["deep", "rich-deep"],
+        }
+    )
+
+    matches = match_shades(np.array(skin.foundation_target_lab), catalog, top_k=2)
+
+    assert skin.foundation_target_active is True
+    assert matches[0].shade_name == "Similar Deeper"
 
 
 def test_highlighted_forehead_is_strongly_downweighted():
