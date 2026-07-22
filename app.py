@@ -75,6 +75,17 @@ st.info(
     "remove sunglasses/hats where possible, and keep cheeks and jawline visible."
 )
 
+extraction_mode_label = st.radio(
+    "Extraction debug mode",
+    ["Auto", "Force original extraction", "Force corrected extraction"],
+    horizontal=True,
+)
+extraction_mode = {
+    "Auto": "auto",
+    "Force original extraction": "force_original",
+    "Force corrected extraction": "force_corrected",
+}[extraction_mode_label]
+
 uploaded_file = st.file_uploader(
     "Upload a facial image", type=["jpg", "jpeg", "png", "bmp"]
 )
@@ -99,11 +110,6 @@ if uploaded_file is not None:
     if not face_result.success:
         st.error(face_result.error)
     else:
-        with col2:
-            st.subheader("Detected Face Landmarks")
-            overlay = draw_face_landmarks(corrected_rgb, face_result.landmarks)
-            st.image(overlay, caption=f"{len(face_result.landmarks)} landmarks", width=400)
-
         with st.expander("Lighting correction notes"):
             for note in correction_notes:
                 st.caption(note)
@@ -115,10 +121,32 @@ if uploaded_file is not None:
             st.warning(warning)
 
         masks = build_region_masks(corrected_rgb.shape, face_result.landmarks)
+        extraction_selection = run_dual_extraction(
+            image_rgb, corrected_rgb, masks, lighting_quality, extraction_mode
+        )
+        skin_result = extraction_selection.selected
+        skin_result.extraction_quality_reasons.append(extraction_selection.reason)
+        visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
+        visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
+
+        with col2:
+            st.subheader("Detected Face Landmarks")
+            overlay = draw_face_landmarks(visualization_rgb, face_result.landmarks)
+            caption = (
+                f"{len(face_result.landmarks)} landmarks | displayed on {visual_source_label}. "
+                "Face detection used the corrected preview only for landmark stability."
+            )
+            st.image(overlay, caption=caption, width=400)
+            st.caption(f"Landmark visualization source: displayed on {visual_source_label}.")
 
         st.subheader("Skin Regions")
-        combined_overlay = draw_all_region_masks(corrected_rgb, masks)
-        st.image(combined_overlay, caption="Forehead / cheeks / jawline (combined)", width=450)
+        combined_overlay = draw_all_region_masks(visualization_rgb, masks)
+        st.image(
+            combined_overlay,
+            caption=f"Forehead / cheeks / jawline (combined) | displayed on {visual_source_label}",
+            width=450,
+        )
+        st.caption(f"Region visualization source: displayed on {visual_source_label}.")
 
         region_cols = st.columns(4)
         region_labels = {
@@ -129,15 +157,11 @@ if uploaded_file is not None:
         }
         for col, (region_key, label) in zip(region_cols, region_labels.items()):
             with col:
-                region_overlay = draw_region_mask(corrected_rgb, masks[region_key])
+                region_overlay = draw_region_mask(visualization_rgb, masks[region_key])
                 pixel_count = int((masks[region_key] > 0).sum())
                 st.image(region_overlay, caption=f"{label} ({pixel_count}px)", width=180)
                 if pixel_count == 0:
                     st.caption("No usable pixels in this region.")
-
-        extraction_selection = run_dual_extraction(image_rgb, corrected_rgb, masks, lighting_quality)
-        skin_result = extraction_selection.selected
-        skin_result.extraction_quality_reasons.append(extraction_selection.reason)
 
         for warning in skin_result.warnings:
             st.warning(warning)
@@ -151,6 +175,13 @@ if uploaded_file is not None:
             else:
                 st.error("Could not extract a usable skin swatch.")
         with detail_col:
+            source_label = (
+                f"Auto-selected {extraction_selection.selected_source}"
+                if extraction_selection.selection_mode == "auto"
+                else ("Original image" if extraction_selection.selected_source == "original" else "Corrected image")
+            )
+            st.caption(f"Shade extraction source: {source_label}")
+            st.caption(f"Selection reason: {extraction_selection.reason}")
             st.metric("Extraction quality score", f"{skin_result.quality_score:.0%}")
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Lab: {lab_rounded}")
@@ -171,6 +202,7 @@ if uploaded_file is not None:
         with st.expander("Color Correction Diagnostics"):
             st.caption("Color Correction Diagnostics")
             st.caption(f"Selected extraction source: {extraction_selection.selected_source}")
+            st.caption(f"Selection mode: {extraction_selection.selection_mode}")
             st.caption(f"Selection reason: {extraction_selection.reason}")
             diag_cols = st.columns(3)
             with diag_cols[0]:
