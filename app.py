@@ -75,16 +75,11 @@ st.info(
     "remove sunglasses/hats where possible, and keep cheeks and jawline visible."
 )
 
-extraction_mode_label = st.radio(
-    "Extraction debug mode",
-    ["Auto", "Force original extraction", "Force corrected extraction"],
-    horizontal=True,
+st.caption(
+    "Color handling is automatic. The system preserves original image color unless "
+    "correction improves reliability without excessive color shift."
 )
-extraction_mode = {
-    "Auto": "auto",
-    "Force original extraction": "force_original",
-    "Force corrected extraction": "force_corrected",
-}[extraction_mode_label]
+extraction_mode = "auto"
 
 uploaded_file = st.file_uploader(
     "Upload a facial image", type=["jpg", "jpeg", "png", "bmp"]

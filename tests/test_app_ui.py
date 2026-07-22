@@ -13,12 +13,9 @@ def _page_text(at):
     )
 
 
-def _run_uploaded_app(extraction_mode=None):
+def _run_uploaded_app():
     at = AppTest.from_file("app.py")
     at.run(timeout=30)
-    if extraction_mode is not None:
-        at.radio[0].set_value(extraction_mode)
-        at.run(timeout=30)
     image_path = Path("data/sample_images/face_astronaut.png")
     at.file_uploader[0].upload(image_path.name, image_path.read_bytes())
     at.run(timeout=90)
@@ -66,21 +63,16 @@ def test_capture_guidance_text_exists():
     assert "soft daylight" in page_text
     assert "face camera directly" in page_text
     assert "cheeks and jawline visible" in page_text
+    assert "Color handling is automatic" in page_text
+    assert "preserves original image color" in page_text
 
 
-def test_force_original_mode_uses_original_extraction_in_ui():
-    at = _run_uploaded_app("Force original extraction")
+def test_extraction_mode_controls_are_not_exposed_in_ui():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=30)
     page_text = _page_text(at)
 
-    assert "Shade extraction source: Original image" in page_text
-    assert "debug mode forced original extraction" in page_text
-    assert "displayed on Original image" in page_text
-
-
-def test_force_corrected_mode_uses_corrected_extraction_in_ui():
-    at = _run_uploaded_app("Force corrected extraction")
-    page_text = _page_text(at)
-
-    assert "Shade extraction source: Corrected image" in page_text
-    assert "debug mode forced corrected extraction" in page_text
-    assert "displayed on Corrected image" in page_text
+    assert len(at.radio) == 0
+    assert "Extraction debug mode" not in page_text
+    assert "Force original extraction" not in page_text
+    assert "Force corrected extraction" not in page_text
