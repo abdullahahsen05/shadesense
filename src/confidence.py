@@ -35,6 +35,7 @@ class QualityReport:
     face_quality: float
     top_match_separation: float
     cheek_area_balance: float = 1.0
+    usable_region_count: int = 0
     close_match_tie: bool = False
     warnings: list = field(default_factory=list)
 
@@ -90,6 +91,9 @@ def build_quality_report(skin_result, face_result, matches: list) -> QualityRepo
         warnings.append(
             "One cheek has much less valid skin area than the other; confidence is reduced slightly."
         )
+    usable_region_count = int(getattr(skin_result, "usable_region_count", 0))
+    if 0 < usable_region_count < 3:
+        warnings.append("Fewer than 3 skin regions were usable; confidence is reduced slightly.")
 
     return QualityReport(
         region_consistency=getattr(skin_result, "region_consistency", 0.0),
@@ -97,6 +101,7 @@ def build_quality_report(skin_result, face_result, matches: list) -> QualityRepo
         face_quality=face_quality,
         top_match_separation=separation,
         cheek_area_balance=cheek_area_balance,
+        usable_region_count=usable_region_count,
         close_match_tie=close_match_tie,
         warnings=warnings,
     )
@@ -119,5 +124,7 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
             + WEIGHT_TOP_SEPARATION * quality_report.top_match_separation
         )
         raw_confidence -= 0.04 * (1.0 - quality_report.cheek_area_balance)
+        if 0 < quality_report.usable_region_count < 3:
+            raw_confidence -= 0.03 * (3 - quality_report.usable_region_count)
         match.confidence = float(np.clip(raw_confidence, CONFIDENCE_FLOOR, CONFIDENCE_CEILING))
     return matches

@@ -11,11 +11,24 @@ CHEEK_NAMES = ("left_cheek", "right_cheek")
 FOREHEAD_NAME = "forehead"
 JAWLINE_NAME = "jawline"
 
-LUMINANCE_LOWER_PERCENTILE = 20
-LUMINANCE_UPPER_PERCENTILE = 80
-SATURATION_UPPER_PERCENTILE = 95
+LUMINANCE_LOWER_PERCENTILE = 10
+LUMINANCE_UPPER_PERCENTILE = 90
+MIN_ABSOLUTE_LUMINANCE = 12.0
+MAX_ABSOLUTE_LUMINANCE = 96.0
+SATURATION_UPPER_PERCENTILE = 92
+MAX_ABSOLUTE_SATURATION = 170.0
 MIN_VALID_PIXELS_PER_REGION = 100
 REGION_DISAGREEMENT_THRESHOLD = 12.0  # Lab distance considered "high disagreement"
+CHEEK_AGREEMENT_LAB_DISTANCE = 8.0
+OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE = 14.0
+OPTIONAL_REGION_BASE_WEIGHT = 0.55
+PATCH_SIZE = 18
+PATCH_STRIDE = 12
+MIN_VALID_PIXELS_PER_PATCH = 45
+MIN_STABLE_PATCHES_PER_REGION = 2
+MAX_STABLE_PATCHES_PER_REGION = 8
+MAX_PATCH_LAB_STD = 8.0
+MAX_PATCH_RGB_STD = 34.0
 
 # Forehead is useful but optional: if it disagrees strongly with the cheek
 # tone (full Lab distance), it is excluded outright — likely hair/fringe or
@@ -44,6 +57,8 @@ class RegionSkinResult:
     exclusion_reason: str | None = None
     weight_multiplier: float = 1.0  # down-weighting applied within combination (1.0 = full weight)
     downweight_reason: str | None = None
+    stable_patch_count: int = 0
+    patch_fallback_used: bool = False
     warnings: list = field(default_factory=list)
 
     @property
@@ -77,8 +92,10 @@ class SkinToneResult:
     region_consistency: float = 0.0
     avg_valid_pixel_ratio: float = 0.0
     cheek_area_balance: float = 1.0
+    usable_region_count: int = 0
     included_region_names: list = field(default_factory=list)
     excluded_region_names: list = field(default_factory=list)
+    extraction_quality_reasons: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     success: bool = True
 
@@ -92,6 +109,93 @@ def _to_saturation(pixels_rgb: np.ndarray) -> np.ndarray:
     """Return the HSV saturation channel (0-255) for an (N, 3) uint8 RGB pixel array."""
     hsv = cv2.cvtColor(pixels_rgb.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV)
     return hsv.reshape(-1, 3)[:, 1].astype(np.float64)
+
+
+def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Conservatively filter masked pixels down to plausible skin pixels."""
+    if len(pixels_rgb) == 0:
+        return pixels_rgb, np.empty((0, 3), dtype=np.float64)
+
+    lab = _to_lab(pixels_rgb)
+    saturation = _to_saturation(pixels_rgb)
+    luminance = lab[:, 0]
+
+    lum_low = max(
+        float(np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE)),
+        MIN_ABSOLUTE_LUMINANCE,
+    )
+    lum_high = min(
+        float(np.percentile(luminance, LUMINANCE_UPPER_PERCENTILE)),
+        MAX_ABSOLUTE_LUMINANCE,
+    )
+    if lum_low >= lum_high:
+        lum_low, lum_high = float(np.min(luminance)), float(np.max(luminance))
+
+    sat_high = min(
+        float(np.percentile(saturation, SATURATION_UPPER_PERCENTILE)),
+        MAX_ABSOLUTE_SATURATION,
+    )
+
+    red_dominance = (
+        (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 1].astype(np.int16) > 48)
+        & (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 2].astype(np.int16) > 48)
+        & (saturation > 115)
+    )
+
+    keep = (
+        (luminance >= lum_low)
+        & (luminance <= lum_high)
+        & (saturation <= sat_high)
+        & (~red_dominance)
+    )
+    return pixels_rgb[keep], lab[keep]
+
+
+def _stable_patch_medians(
+    image_rgb: np.ndarray,
+    mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Return RGB/Lab medians from the most stable patches in a mask."""
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return np.empty((0, 3)), np.empty((0, 3)), 0
+
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    stable = []
+
+    for top in range(y0, max(y0 + 1, y1 - PATCH_SIZE + 1), PATCH_STRIDE):
+        for left in range(x0, max(x0 + 1, x1 - PATCH_SIZE + 1), PATCH_STRIDE):
+            patch_mask = mask[top : top + PATCH_SIZE, left : left + PATCH_SIZE]
+            patch_pixels = image_rgb[top : top + PATCH_SIZE, left : left + PATCH_SIZE][patch_mask > 0]
+            if len(patch_pixels) < MIN_VALID_PIXELS_PER_PATCH:
+                continue
+
+            valid_rgb, valid_lab = _filter_skin_pixels(patch_pixels)
+            if len(valid_rgb) < MIN_VALID_PIXELS_PER_PATCH:
+                continue
+
+            lab_std = float(np.mean(np.std(valid_lab, axis=0)))
+            rgb_std = float(np.mean(np.std(valid_rgb.astype(np.float64), axis=0)))
+            if lab_std > MAX_PATCH_LAB_STD or rgb_std > MAX_PATCH_RGB_STD:
+                continue
+
+            stable.append(
+                (
+                    lab_std + rgb_std / 10.0,
+                    np.median(valid_rgb, axis=0),
+                    np.median(valid_lab, axis=0),
+                )
+            )
+
+    if len(stable) < MIN_STABLE_PATCHES_PER_REGION:
+        return np.empty((0, 3)), np.empty((0, 3)), len(stable)
+
+    stable.sort(key=lambda item: item[0])
+    selected = stable[:MAX_STABLE_PATCHES_PER_REGION]
+    rgb_medians = np.stack([item[1] for item in selected])
+    lab_medians = np.stack([item[2] for item in selected])
+    return rgb_medians, lab_medians, len(selected)
 
 
 def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> RegionSkinResult:
@@ -111,17 +215,7 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             warnings=[f"No pixels found for {name}; region mask was empty."],
         )
 
-    lab = _to_lab(pixels)
-    saturation = _to_saturation(pixels)
-    luminance = lab[:, 0]
-
-    lum_low = np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE)
-    lum_high = np.percentile(luminance, LUMINANCE_UPPER_PERCENTILE)
-    sat_high = np.percentile(saturation, SATURATION_UPPER_PERCENTILE)
-
-    keep = (luminance >= lum_low) & (luminance <= lum_high) & (saturation <= sat_high)
-    valid_pixels_rgb = pixels[keep]
-    valid_lab = lab[keep]
+    valid_pixels_rgb, valid_lab = _filter_skin_pixels(pixels)
     valid_count = int(len(valid_pixels_rgb))
     valid_ratio = valid_count / total_count if total_count else 0.0
 
@@ -143,8 +237,19 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             warnings=warnings,
         )
 
-    median_rgb = tuple(np.median(valid_pixels_rgb, axis=0).astype(int).tolist())
-    median_lab = tuple(np.median(valid_lab, axis=0).tolist())
+    patch_rgb, patch_lab, stable_patch_count = _stable_patch_medians(image_rgb, mask)
+    patch_fallback_used = len(patch_rgb) == 0
+    if patch_fallback_used:
+        median_rgb = tuple(np.median(valid_pixels_rgb, axis=0).astype(int).tolist())
+        median_lab = tuple(np.median(valid_lab, axis=0).tolist())
+        if stable_patch_count > 0:
+            warnings.append(
+                f"{name.replace('_', ' ').title()} had only {stable_patch_count} stable patch(es); "
+                "using full-region median fallback."
+            )
+    else:
+        median_rgb = tuple(np.median(patch_rgb, axis=0).astype(int).tolist())
+        median_lab = tuple(np.median(patch_lab, axis=0).tolist())
 
     return RegionSkinResult(
         name=name,
@@ -154,6 +259,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         median_rgb=median_rgb,
         median_lab=median_lab,
         reliable=valid_count >= MIN_VALID_PIXELS_PER_REGION,
+        stable_patch_count=stable_patch_count if not patch_fallback_used else 0,
+        patch_fallback_used=patch_fallback_used,
         warnings=warnings,
     )
 
@@ -189,6 +296,14 @@ def _cheek_anchor_lab(reliable_by_name: dict):
     weights = weights / weights.sum()
     lab_stack = np.array([r.median_lab for r in cheek_regions], dtype=np.float64)
     return np.average(lab_stack, axis=0, weights=weights)
+
+
+def _both_cheeks_agree(reliable_by_name: dict) -> bool:
+    left = reliable_by_name.get("left_cheek")
+    right = reliable_by_name.get("right_cheek")
+    if left is None or right is None or left.median_lab is None or right.median_lab is None:
+        return False
+    return _lab_distance(left.median_lab, right.median_lab) <= CHEEK_AGREEMENT_LAB_DISTANCE
 
 
 def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
@@ -233,6 +348,25 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
             )
             warnings.append(jawline.downweight_reason)
 
+    if _both_cheeks_agree(reliable_by_name):
+        for name in (FOREHEAD_NAME, JAWLINE_NAME):
+            region = reliable_by_name.get(name)
+            if region is None or region.excluded:
+                continue
+            if region.weight_multiplier < 1.0:
+                continue
+            dist = _lab_distance(region.median_lab, anchor_lab)
+            if dist > OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE:
+                region.weight_multiplier *= 0.5
+                reason = (
+                    f"{name.title()} differs from two agreeing cheeks (Lab distance {dist:.1f}); "
+                    "it remains included as supporting signal with reduced weight."
+                )
+                region.downweight_reason = (
+                    f"{region.downweight_reason} {reason}" if region.downweight_reason else reason
+                )
+                warnings.append(reason)
+
     return warnings
 
 
@@ -259,6 +393,70 @@ def _cheek_area_balance(region_results: dict) -> tuple[float, str | None]:
             f"than the {larger_name}. Confidence is reduced slightly, but both cheeks remain usable."
         )
     return balance, None
+
+
+def _region_base_weight(region_name: str) -> float:
+    return 1.0 if region_name in CHEEK_NAMES else OPTIONAL_REGION_BASE_WEIGHT
+
+
+def _adjusted_region_consistency(regions: list, reliable_by_name: dict) -> float:
+    consistency = _region_consistency(regions)
+    if not _both_cheeks_agree(reliable_by_name):
+        return consistency
+    cheek_regions = [reliable_by_name[n] for n in CHEEK_NAMES if n in reliable_by_name]
+    cheek_consistency = _region_consistency(cheek_regions)
+    return float(max(consistency, cheek_consistency * 0.9))
+
+
+def _build_extraction_quality_reasons(region_results: dict, skin_result_fields: dict) -> list:
+    reasons = []
+    included = skin_result_fields.get("included_region_names", [])
+    excluded = skin_result_fields.get("excluded_region_names", [])
+    reduced = [
+        name
+        for name, region in region_results.items()
+        if not region.excluded and region.weight_multiplier < 1.0
+    ]
+
+    reasons.append(
+        "Included regions: "
+        + (", ".join(n.replace("_", " ").title() for n in included) if included else "None")
+        + "."
+    )
+    not_used = [
+        name
+        for name, region in region_results.items()
+        if name not in included and (region.excluded or not region.reliable)
+    ]
+    if not_used:
+        reasons.append(
+            "Not-used regions: "
+            + ", ".join(n.replace("_", " ").title() for n in not_used)
+            + "."
+        )
+    if reduced:
+        reasons.append(
+            "Reduced-weight regions: "
+            + ", ".join(n.replace("_", " ").title() for n in reduced)
+            + "."
+        )
+    for name, region in region_results.items():
+        if region.stable_patch_count > 0:
+            reasons.append(
+                f"{name.replace('_', ' ').title()}: used {region.stable_patch_count} stable patch(es)."
+            )
+        elif region.patch_fallback_used and region.median_rgb is not None:
+            reasons.append(
+                f"{name.replace('_', ' ').title()}: used full-region median fallback."
+            )
+        if region.status_reason:
+            reasons.append(f"{name.replace('_', ' ').title()}: {region.status_reason}")
+
+    if skin_result_fields.get("usable_region_count", 0) < 3:
+        reasons.append("Fewer than 3 regions were usable, so extraction confidence is reduced slightly.")
+    if skin_result_fields.get("cheek_area_balance", 1.0) < CHEEK_AREA_IMBALANCE_WARNING_RATIO:
+        reasons.append("Cheek valid-area imbalance reduced confidence slightly.")
+    return reasons
 
 
 def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
@@ -311,8 +509,10 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
                 region_consistency=0.0,
                 avg_valid_pixel_ratio=0.0,
                 cheek_area_balance=cheek_area_balance,
+                usable_region_count=0,
                 included_region_names=[],
                 excluded_region_names=[n for n, r in region_results.items() if r.excluded],
+                extraction_quality_reasons=[],
                 warnings=warnings,
                 success=False,
             )
@@ -323,7 +523,11 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         combination_regions = fallback_regions
 
     weights = np.array(
-        [r.valid_pixel_count * r.weight_multiplier for r in combination_regions], dtype=np.float64
+        [
+            r.valid_pixel_count * r.weight_multiplier * _region_base_weight(r.name)
+            for r in combination_regions
+        ],
+        dtype=np.float64,
     )
     weights = weights / weights.sum()
 
@@ -333,7 +537,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     final_rgb = tuple(np.round(np.average(rgb_stack, axis=0, weights=weights)).astype(int).tolist())
     final_lab = tuple(np.average(lab_stack, axis=0, weights=weights).tolist())
 
-    consistency = _region_consistency(combination_regions)
+    consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
     avg_valid_ratio = float(np.mean([r.valid_ratio for r in region_results.values()])) if region_results else 0.0
 
     if consistency < 0.5:
@@ -341,10 +545,23 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
             "Skin regions disagree noticeably in color (possible uneven lighting or shadows)."
         )
 
-    quality_score = float(np.clip(0.5 * consistency + 0.5 * avg_valid_ratio, 0.0, 1.0))
-
     included_region_names = [r.name for r in combination_regions]
     excluded_region_names = [name for name, r in region_results.items() if r.excluded]
+    usable_region_count = len(combination_regions)
+    if usable_region_count < 3:
+        warnings.append("Fewer than 3 skin regions were usable; extraction confidence is reduced slightly.")
+
+    region_count_score = min(usable_region_count / 3.0, 1.0)
+    quality_score = float(
+        np.clip(0.45 * consistency + 0.4 * avg_valid_ratio + 0.15 * region_count_score, 0.0, 1.0)
+    )
+    quality_fields = {
+        "included_region_names": included_region_names,
+        "excluded_region_names": excluded_region_names,
+        "usable_region_count": usable_region_count,
+        "cheek_area_balance": cheek_area_balance,
+    }
+    extraction_quality_reasons = _build_extraction_quality_reasons(region_results, quality_fields)
 
     return SkinToneResult(
         rgb=final_rgb,
@@ -354,8 +571,10 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         region_consistency=consistency,
         avg_valid_pixel_ratio=avg_valid_ratio,
         cheek_area_balance=cheek_area_balance,
+        usable_region_count=usable_region_count,
         included_region_names=included_region_names,
         excluded_region_names=excluded_region_names,
+        extraction_quality_reasons=extraction_quality_reasons,
         warnings=warnings,
         success=True,
     )
