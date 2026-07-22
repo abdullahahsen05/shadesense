@@ -34,6 +34,12 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
             "had very similar Delta E scores."
         )
 
+    if getattr(match, "product_variants", None):
+        parts.append(
+            "This shade appears in multiple product formats in the catalog; the closest "
+            "matching variant is shown."
+        )
+
     if quality_report.region_consistency < 0.5:
         parts.append(
             "Confidence is reduced because the forehead, cheek, and jawline regions "

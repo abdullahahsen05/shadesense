@@ -125,3 +125,92 @@ def test_depth_tiebreak_affects_only_close_matches():
     clear_matches = match_shades(np.array([55.0, 0.0, 0.0]), df, top_k=1)
     assert clear_matches[0].shade_name == "Clear Winner"
     assert clear_matches[0].delta_e < 1e-6
+
+
+def test_same_brand_same_shade_different_product_appears_once_with_variants():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "A2", "B1", "C1"],
+            "brand": ["Hourglass", "Hourglass", "Brand B", "Brand C"],
+            "product": ["Liquid Foundation", "Foundation Stick", "Base", "Base"],
+            "shade_name": ["Vanilla", "Vanilla", "Sand", "Tan"],
+            "hex": ["#C8A080", "#C9A181", "#B89070", "#A07050"],
+            "r": [200, 201, 184, 160],
+            "g": [160, 161, 144, 112],
+            "b": [128, 129, 112, 80],
+            "lab_l": [60.0, 60.2, 56.0, 50.0],
+            "lab_a": [10.0, 10.1, 9.0, 8.0],
+            "lab_b": [18.0, 18.1, 17.0, 16.0],
+        }
+    )
+    matches = match_shades(np.array([60.0, 10.0, 18.0]), df, top_k=3)
+    keys = [(m.brand, m.shade_name) for m in matches]
+    assert keys.count(("Hourglass", "Vanilla")) == 1
+    hourglass = matches[0]
+    assert hourglass.product == "Liquid Foundation"
+    assert [v["product"] for v in hourglass.product_variants] == ["Foundation Stick"]
+    assert len(matches) == 3
+
+
+def test_same_shade_name_across_different_brands_not_merged():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "B1"],
+            "brand": ["Hourglass", "Fenty"],
+            "product": ["Liquid", "Liquid"],
+            "shade_name": ["Vanilla", "Vanilla"],
+            "hex": ["#C8A080", "#C8A080"],
+            "r": [200, 200],
+            "g": [160, 160],
+            "b": [128, 128],
+            "lab_l": [60.0, 60.0],
+            "lab_a": [10.0, 10.0],
+            "lab_b": [18.0, 18.0],
+        }
+    )
+    matches = match_shades(np.array([60.0, 10.0, 18.0]), df, top_k=2)
+    assert len(matches) == 2
+    assert {m.brand for m in matches} == {"Hourglass", "Fenty"}
+
+
+def test_exact_duplicate_rows_removed_from_variant_list():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "A1_DUP", "A2", "B1"],
+            "brand": ["Hourglass", "Hourglass", "Hourglass", "Brand B"],
+            "product": ["Liquid", "Liquid", "Stick", "Base"],
+            "shade_name": ["Vanilla", "Vanilla", "Vanilla", "Sand"],
+            "hex": ["#C8A080", "#C8A080", "#C9A181", "#B89070"],
+            "r": [200, 200, 201, 184],
+            "g": [160, 160, 161, 144],
+            "b": [128, 128, 129, 112],
+            "lab_l": [60.0, 60.0, 60.2, 56.0],
+            "lab_a": [10.0, 10.0, 10.1, 9.0],
+            "lab_b": [18.0, 18.0, 18.1, 17.0],
+        }
+    )
+    matches = match_shades(np.array([60.0, 10.0, 18.0]), df, top_k=2)
+    hourglass = matches[0]
+    assert len(hourglass.product_variants) == 1
+    assert hourglass.product_variants[0]["product"] == "Stick"
+
+
+def test_top_three_returns_distinct_candidates_when_enough_unique_shades_exist():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A1", "A2", "B1", "C1", "D1"],
+            "brand": ["Brand A", "Brand A", "Brand B", "Brand C", "Brand D"],
+            "product": ["Liquid", "Stick", "Base", "Base", "Base"],
+            "shade_name": ["One", "One", "Two", "Three", "Four"],
+            "hex": ["#A07050", "#A17151", "#A87858", "#B08060", "#C09070"],
+            "r": [160, 161, 168, 176, 192],
+            "g": [112, 113, 120, 128, 144],
+            "b": [80, 81, 88, 96, 112],
+            "lab_l": [50.0, 50.1, 51.0, 52.0, 54.0],
+            "lab_a": [8.0, 8.1, 9.0, 10.0, 11.0],
+            "lab_b": [16.0, 16.1, 17.0, 18.0, 19.0],
+        }
+    )
+    matches = match_shades(np.array([50.0, 8.0, 16.0]), df, top_k=3)
+    assert len(matches) == 3
+    assert len({(m.brand, m.shade_name) for m in matches}) == 3

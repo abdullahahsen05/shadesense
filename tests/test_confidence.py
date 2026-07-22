@@ -157,6 +157,15 @@ def test_explanation_mentions_undertone_and_delta_e():
     assert "3.0" in text
 
 
+def test_explanation_mentions_grouped_product_variants():
+    match = _match(3.0)
+    match.product_variants = [{"product": "Foundation Stick"}]
+    qr = QualityReport(region_consistency=0.9, valid_pixel_ratio=0.9, face_quality=1.0, top_match_separation=0.9)
+    text = build_explanation(match, FakeSkinResult(0.9, 0.9), qr, rank=1, matches=[match])
+    assert "multiple product formats" in text
+    assert "closest matching variant is shown" in text
+
+
 def test_explanation_flags_region_disagreement_and_low_pixels():
     match = _match(5.0)
     qr = QualityReport(region_consistency=0.2, valid_pixel_ratio=0.2, face_quality=1.0, top_match_separation=0.9)

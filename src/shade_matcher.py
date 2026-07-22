@@ -1,6 +1,7 @@
 """Shade matching via perceptual (CIEDE2000) color distance in Lab space."""
 
 from dataclasses import dataclass
+import re
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ class ShadeMatch:
     confidence_breakdown: dict | None = None
     depth_penalty: float = 0.0
     ranking_score: float | None = None
+    product_variants: list | None = None
     explanation: str | None = None
 
 
@@ -46,6 +48,18 @@ DEPTH_ORDER = {
 }
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
 DEPTH_TIE_PENALTY = 0.35
+VARIANT_DELTA_E_WINDOW = 1.5
+VARIANT_HEX_RGB_DISTANCE = 10.0
+
+
+def _normalize_key_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+
+
+def _rgb_distance(a: tuple, b: tuple) -> float:
+    return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
 
 def estimate_depth_from_lab_l(l_value: float) -> str:
@@ -88,6 +102,81 @@ def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarra
     return np.linalg.norm(catalog_lab - np.asarray(skin_lab), axis=1)
 
 
+def _row_to_match(row, idx, distances, ranking_scores, rank: int = 0) -> ShadeMatch:
+    depth_penalty = float(ranking_scores[idx] - distances[idx])
+    return ShadeMatch(
+        shade_id=str(row["shade_id"]),
+        brand=str(row["brand"]),
+        shade_name=str(row["shade_name"]),
+        hex=str(row["hex"]),
+        rgb=(int(row["r"]), int(row["g"]), int(row["b"])),
+        lab=(float(row["lab_l"]), float(row["lab_a"]), float(row["lab_b"])),
+        delta_e=float(distances[idx]),
+        product=row.get("product") if pd.notna(row.get("product")) else None,
+        undertone=row.get("undertone") if pd.notna(row.get("undertone")) else None,
+        depth=row.get("depth") if pd.notna(row.get("depth")) else None,
+        source=row.get("source") if pd.notna(row.get("source")) else None,
+        source_url=row.get("source_url") if pd.notna(row.get("source_url")) else None,
+        depth_penalty=depth_penalty,
+        ranking_score=float(ranking_scores[idx]),
+        product_variants=[],
+        rank=rank,
+    )
+
+
+def _is_same_shade_candidate(candidate: ShadeMatch, existing: ShadeMatch) -> bool:
+    if _normalize_key_text(candidate.brand) != _normalize_key_text(existing.brand):
+        return False
+    if _normalize_key_text(candidate.shade_name) != _normalize_key_text(existing.shade_name):
+        return False
+    if candidate.hex == existing.hex:
+        return True
+    return (
+        abs(candidate.delta_e - existing.delta_e) <= VARIANT_DELTA_E_WINDOW
+        or _rgb_distance(candidate.rgb, existing.rgb) <= VARIANT_HEX_RGB_DISTANCE
+    )
+
+
+def _variant_payload(match: ShadeMatch) -> dict:
+    return {
+        "shade_id": match.shade_id,
+        "brand": match.brand,
+        "product": match.product,
+        "shade_name": match.shade_name,
+        "hex": match.hex,
+        "delta_e": match.delta_e,
+    }
+
+
+def _add_variant(primary: ShadeMatch, variant: ShadeMatch) -> None:
+    if primary.product_variants is None:
+        primary.product_variants = []
+    exact_key = (
+        _normalize_key_text(variant.brand),
+        _normalize_key_text(variant.product),
+        _normalize_key_text(variant.shade_name),
+        variant.hex,
+    )
+    primary_key = (
+        _normalize_key_text(primary.brand),
+        _normalize_key_text(primary.product),
+        _normalize_key_text(primary.shade_name),
+        primary.hex,
+    )
+    if exact_key == primary_key:
+        return
+    for existing in primary.product_variants:
+        existing_key = (
+            _normalize_key_text(existing.get("brand")),
+            _normalize_key_text(existing.get("product")),
+            _normalize_key_text(existing.get("shade_name")),
+            existing.get("hex"),
+        )
+        if existing_key == exact_key:
+            return
+    primary.product_variants.append(_variant_payload(variant))
+
+
 def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
     """Rank catalog shades by perceptual distance to the extracted skin color.
 
@@ -108,29 +197,22 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
             if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
                 ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
 
-    order = np.lexsort((distances, ranking_scores))[:top_k]
+    order = np.lexsort((distances, ranking_scores))
 
     matches = []
-    for rank, idx in enumerate(order, start=1):
+    for idx in order:
         row = catalog_df.iloc[idx]
-        depth_penalty = float(ranking_scores[idx] - distances[idx])
-        matches.append(
-            ShadeMatch(
-                shade_id=str(row["shade_id"]),
-                brand=str(row["brand"]),
-                shade_name=str(row["shade_name"]),
-                hex=str(row["hex"]),
-                rgb=(int(row["r"]), int(row["g"]), int(row["b"])),
-                lab=(float(row["lab_l"]), float(row["lab_a"]), float(row["lab_b"])),
-                delta_e=float(distances[idx]),
-                product=row.get("product") if pd.notna(row.get("product")) else None,
-                undertone=row.get("undertone") if pd.notna(row.get("undertone")) else None,
-                depth=row.get("depth") if pd.notna(row.get("depth")) else None,
-                source=row.get("source") if pd.notna(row.get("source")) else None,
-                source_url=row.get("source_url") if pd.notna(row.get("source_url")) else None,
-                depth_penalty=depth_penalty,
-                ranking_score=float(ranking_scores[idx]),
-                rank=rank,
-            )
-        )
+        candidate = _row_to_match(row, idx, distances, ranking_scores)
+        grouped = False
+        for existing in matches:
+            if _is_same_shade_candidate(candidate, existing):
+                _add_variant(existing, candidate)
+                grouped = True
+                break
+        if grouped:
+            continue
+        candidate.rank = len(matches) + 1
+        matches.append(candidate)
+        if len(matches) >= top_k:
+            break
     return matches

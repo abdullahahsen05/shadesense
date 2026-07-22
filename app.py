@@ -241,6 +241,18 @@ if uploaded_file is not None:
                             st.image(make_skin_swatch(match.rgb), width=150)
                             st.markdown(f"**#{match.rank}: {match.shade_name}**")
                             st.caption(f"Product: {match.product or 'unknown'}")
+                            if match.product_variants:
+                                variant_products = [
+                                    v.get("product")
+                                    for v in match.product_variants
+                                    if v.get("product") and v.get("product") != match.product
+                                ]
+                                if variant_products:
+                                    unique_variant_products = list(dict.fromkeys(variant_products))
+                                    st.caption(
+                                        "Also available in: "
+                                        + ", ".join(unique_variant_products[:3])
+                                    )
                             st.caption(f"{match.brand} · {match.hex}")
                             st.metric("Match confidence", f"{match.confidence:.0%}")
                             if match.confidence_breakdown:
