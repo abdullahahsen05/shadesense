@@ -36,7 +36,7 @@ Then open the local URL Streamlit prints (usually http://localhost:8501).
 2. The app detects the face and landmarks.
 3. Cheek, forehead, and jawline masks are extracted.
 4. A representative skin color is computed from filtered skin pixels.
-5. The skin color is matched against `data/shade_catalog_mock.csv` using CIEDE2000
+5. The skin color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space.
 6. The app shows the Top 3 shade recommendations with confidence scores and reasoning.
 
@@ -66,12 +66,33 @@ shadesense-ai/
 
 ## Shade Catalog
 
-`data/shade_catalog_mock.csv` is a mock catalog (18 shades) used until the real
-catalog arrives. Schema:
+`data/public_shade_catalog.csv` is the default catalog when present and valid.
+It is generated locally from downloaded public CSV files placed in
+`data/public_catalog_raw/`:
+
+```bash
+python scripts/prepare_public_catalog.py
+```
+
+`data/shade_catalog_mock.csv` remains available as a small development fallback
+catalog (18 shades). The app lets you choose between the public and mock
+catalogs.
+
+Mock catalog schema:
 
 ```csv
 shade_id,brand,shade_name,hex,r,g,b,undertone,depth,notes
 ```
+
+Public catalog schema:
+
+```csv
+shade_id,brand,product,shade_name,hex,undertone,depth,source,source_url
+```
+
+See `docs/catalog_setup.md` for setup details and limitations. Public swatch
+colors are website-derived approximations, not guaranteed matches to real
+applied foundation.
 
 ## Known Limitations
 
