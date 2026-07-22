@@ -29,7 +29,46 @@ class ShadeMatch:
     source_url: str | None = None
     rank: int = 0
     confidence: float | None = None
+    confidence_breakdown: dict | None = None
+    depth_penalty: float = 0.0
+    ranking_score: float | None = None
     explanation: str | None = None
+
+
+DEPTH_ORDER = {
+    "fair": 0,
+    "light": 1,
+    "light-medium": 2,
+    "medium": 3,
+    "tan": 4,
+    "deep": 5,
+    "rich-deep": 6,
+}
+DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
+DEPTH_TIE_PENALTY = 0.35
+
+
+def estimate_depth_from_lab_l(l_value: float) -> str:
+    """Estimate broad skin depth from Lab L*."""
+    if l_value >= 85:
+        return "fair"
+    if l_value >= 75:
+        return "light"
+    if l_value >= 65:
+        return "light-medium"
+    if l_value >= 55:
+        return "medium"
+    if l_value >= 45:
+        return "tan"
+    if l_value >= 32:
+        return "deep"
+    return "rich-deep"
+
+
+def _depth_distance(estimated_depth: str, catalog_depth) -> int:
+    if catalog_depth is None or pd.isna(catalog_depth):
+        return 0
+    return abs(DEPTH_ORDER.get(str(estimated_depth), 0) - DEPTH_ORDER.get(str(catalog_depth), DEPTH_ORDER.get(str(estimated_depth), 0)))
 
 
 def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarray:
@@ -61,12 +100,20 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
 
     catalog_lab = catalog_df[["lab_l", "lab_a", "lab_b"]].to_numpy(dtype=np.float64)
     distances = _compute_delta_e(skin_lab, catalog_lab)
+    estimated_depth = estimate_depth_from_lab_l(float(np.asarray(skin_lab, dtype=np.float64)[0]))
+    best_delta = float(np.min(distances))
+    ranking_scores = distances.copy()
+    if "depth" in catalog_df.columns:
+        for idx, row in catalog_df.iterrows():
+            if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
+                ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
 
-    order = np.argsort(distances)[:top_k]
+    order = np.lexsort((distances, ranking_scores))[:top_k]
 
     matches = []
     for rank, idx in enumerate(order, start=1):
         row = catalog_df.iloc[idx]
+        depth_penalty = float(ranking_scores[idx] - distances[idx])
         matches.append(
             ShadeMatch(
                 shade_id=str(row["shade_id"]),
@@ -81,6 +128,8 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
                 depth=row.get("depth") if pd.notna(row.get("depth")) else None,
                 source=row.get("source") if pd.notna(row.get("source")) else None,
                 source_url=row.get("source_url") if pd.notna(row.get("source_url")) else None,
+                depth_penalty=depth_penalty,
+                ranking_score=float(ranking_scores[idx]),
                 rank=rank,
             )
         )

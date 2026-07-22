@@ -5,7 +5,7 @@ from skimage.color import deltaE_ciede2000
 
 from src.config import SHADE_CATALOG_PATH
 from src.shade_catalog import CatalogValidationError, load_shade_catalog
-from src.shade_matcher import match_shades
+from src.shade_matcher import estimate_depth_from_lab_l, match_shades
 
 
 def test_deltaE_ciede2000_identical_colors_is_zero():
@@ -93,3 +93,35 @@ def test_match_shades_sorted_ascending_by_delta_e():
     assert deltas == sorted(deltas)
     assert matches[0].delta_e < 1e-6  # matches its own shade exactly
     assert [m.rank for m in matches] == [1, 2, 3]
+
+
+def test_depth_estimation_from_lab_l():
+    assert estimate_depth_from_lab_l(90) == "fair"
+    assert estimate_depth_from_lab_l(70) == "light-medium"
+    assert estimate_depth_from_lab_l(50) == "tan"
+    assert estimate_depth_from_lab_l(25) == "rich-deep"
+
+
+def test_depth_tiebreak_affects_only_close_matches():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["P1", "P2", "P3"],
+            "brand": ["T", "T", "T"],
+            "shade_name": ["Close Wrong Depth", "Close Right Depth", "Clear Winner"],
+            "hex": ["#777777", "#777777", "#777777"],
+            "r": [119, 119, 119],
+            "g": [119, 119, 119],
+            "b": [119, 119, 119],
+            "lab_l": [50.0, 50.4, 55.0],
+            "lab_a": [0.0, 0.0, 0.0],
+            "lab_b": [0.0, 0.0, 0.0],
+            "depth": ["fair", "tan", "tan"],
+        }
+    )
+    close_matches = match_shades(np.array([50.2, 0.0, 0.0]), df, top_k=2)
+    assert close_matches[0].shade_name == "Close Right Depth"
+    assert close_matches[0].delta_e <= close_matches[1].delta_e + 0.5
+
+    clear_matches = match_shades(np.array([55.0, 0.0, 0.0]), df, top_k=1)
+    assert clear_matches[0].shade_name == "Clear Winner"
+    assert clear_matches[0].delta_e < 1e-6

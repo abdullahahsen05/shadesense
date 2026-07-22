@@ -28,6 +28,12 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
     if match.undertone:
         parts.append(f"Its listed undertone is {match.undertone}.")
 
+    if getattr(match, "depth_penalty", 0.0) > 0:
+        parts.append(
+            "Depth was used only as a small tie-breaker because nearby catalog colors "
+            "had very similar Delta E scores."
+        )
+
     if quality_report.region_consistency < 0.5:
         parts.append(
             "Confidence is reduced because the forehead, cheek, and jawline regions "
@@ -53,7 +59,7 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
 
     if getattr(quality_report, "close_match_tie", False):
         parts.append(
-            "Close match tie: the top shades are nearly identical in catalog color and "
+            "Close match tie: these shades are nearly identical in catalog color and "
             "should be considered equivalent candidates."
         )
     elif rank <= 2 and len(matches) >= 2 and quality_report.top_match_separation < 0.3:
