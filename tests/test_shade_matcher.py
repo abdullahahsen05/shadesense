@@ -127,6 +127,31 @@ def test_depth_tiebreak_affects_only_close_matches():
     assert clear_matches[0].delta_e < 1e-6
 
 
+def test_close_too_light_shade_loses_to_similar_deeper_candidate():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["too_light", "deeper"],
+            "brand": ["Test", "Test"],
+            "shade_name": ["Too Light", "Similar Deeper"],
+            "hex": ["#111111", "#222222"],
+            "r": [1, 2],
+            "g": [1, 2],
+            "b": [1, 2],
+            "lab_l": [35.0, 31.0],
+            "lab_a": [8.0, 13.0],
+            "lab_b": [10.0, 13.0],
+            "depth": ["deep", "rich-deep"],
+        }
+    )
+
+    matches = match_shades(np.array([30.0, 8.0, 10.0]), df, top_k=2)
+
+    assert matches[0].shade_name == "Similar Deeper"
+    assert matches[1].shade_name == "Too Light"
+    assert matches[1].delta_e < matches[0].delta_e
+    assert matches[1].depth_penalty > 0
+
+
 def test_same_brand_same_shade_different_product_appears_once_with_variants():
     df = pd.DataFrame(
         {

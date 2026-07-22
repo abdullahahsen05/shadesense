@@ -34,3 +34,14 @@ def test_lighting_quality_flags_uneven_shadow_contrast():
     assert result.uneven_lighting
     assert result.strong_shadow_contrast
     assert result.score < 0.8
+
+
+def test_lighting_quality_flags_broad_glossy_highlights():
+    image = np.full((120, 120, 3), (72, 48, 36), dtype=np.uint8)
+    image[20:80, 20:100] = (235, 230, 220)
+
+    result = analyze_lighting_quality(image)
+
+    assert result.strong_highlights
+    assert result.score < 1.0
+    assert any("glossy shine" in warning.lower() or "highlights" in warning.lower() for warning in result.warnings)

@@ -362,6 +362,38 @@ def test_deep_skin_with_bright_highlight_patches_does_not_become_too_light():
     assert any("bright highlight patches were excluded" in r.lower() for r in skin.extraction_quality_reasons)
 
 
+def test_rich_deep_skin_with_broad_highlights_does_not_shift_too_light():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(70, 45, 34),
+        left_cheek_rgb=(72, 48, 36),
+        right_cheek_rgb=(72, 48, 36),
+        jawline_rgb=(48, 31, 24),
+    )
+    image[0:20, :] = (155, 145, 132)
+    image[30:50, 0:25] = (180, 172, 160)
+    image[30:50, 50:75] = (180, 172, 160)
+
+    skin = extract_skin_tone(image, masks)
+
+    assert skin.lab[0] < 35
+    assert skin.depth_estimate == "rich-deep"
+    assert any("shine does not make the foundation target too light" in w.lower() for w in skin.warnings)
+
+
+def test_highlighted_forehead_is_strongly_downweighted():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(220, 214, 205),
+        left_cheek_rgb=(85, 56, 42),
+        right_cheek_rgb=(85, 56, 42),
+        jawline_rgb=(58, 38, 30),
+    )
+    skin = extract_skin_tone(image, masks)
+    forehead = skin.region_results["forehead"]
+
+    assert forehead.specular_highlight_detected or forehead.excluded
+    assert forehead.excluded or forehead.weight_multiplier <= 0.2
+
+
 def test_patch_voting_shadow_patch_does_not_pull_final_lab_too_dark():
     image, masks = _synthetic_scene(
         forehead_rgb=(152, 105, 78),

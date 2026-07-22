@@ -15,6 +15,7 @@ class LightingQuality:
     overexposed: bool = False
     uneven_lighting: bool = False
     strong_shadow_contrast: bool = False
+    strong_highlights: bool = False
     color_cast: bool = False
 
 
@@ -26,8 +27,11 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
     image = image_rgb.astype(np.float64)
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY).astype(np.float64)
     mean_luma = float(np.mean(gray))
-    p05, p25, p75, p95 = [float(v) for v in np.percentile(gray, [5, 25, 75, 95])]
+    p05, p25, p75, p90, p95, p99 = [float(v) for v in np.percentile(gray, [5, 25, 75, 90, 95, 99])]
     shadow_contrast = p95 - p05
+    highlight_ratio = float(np.mean(gray > 225))
+    broad_highlight_ratio = float(np.mean(gray > 205))
+    highlight_gap = p99 - p75
 
     h, w = gray.shape
     left_mean = float(np.mean(gray[:, : max(1, w // 2)]))
@@ -44,8 +48,9 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
     score = 1.0
     underexposed = mean_luma < 70 or p75 < 85
     overexposed = mean_luma > 205 or p25 > 185
-    uneven_lighting = uneven_gap > 42
+    uneven_lighting = uneven_gap > 36
     strong_shadow_contrast = shadow_contrast > 185
+    strong_highlights = highlight_ratio > 0.025 or (broad_highlight_ratio > 0.08 and highlight_gap > 35)
     color_cast = cast_strength > 22
 
     if underexposed:
@@ -60,6 +65,9 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
     if strong_shadow_contrast:
         score -= 0.14
         warnings.append("Strong shadow/highlight contrast detected.")
+    if strong_highlights:
+        score -= 0.16
+        warnings.append("Strong facial highlights or glossy shine detected; extracted depth may skew too light.")
     if color_cast:
         score -= 0.12
         warnings.append("Possible color cast detected; white balance may affect shade matching.")
@@ -67,7 +75,8 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
     score = float(np.clip(score, 0.25, 1.0))
     explanation = (
         f"Mean luminance {mean_luma:.0f}/255, shadow range {shadow_contrast:.0f}, "
-        f"uneven-lighting gap {uneven_gap:.0f}, color-cast strength {cast_strength:.0f}."
+        f"uneven-lighting gap {uneven_gap:.0f}, highlight ratio {highlight_ratio:.1%}, "
+        f"color-cast strength {cast_strength:.0f}."
     )
     if not warnings:
         explanation += " Lighting looks suitable for extraction."
@@ -80,5 +89,6 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
         overexposed=overexposed,
         uneven_lighting=uneven_lighting,
         strong_shadow_contrast=strong_shadow_contrast,
+        strong_highlights=strong_highlights,
         color_cast=color_cast,
     )

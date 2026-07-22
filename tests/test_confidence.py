@@ -35,6 +35,7 @@ class FakeSkinResult:
             if stability_score < 70
             else [],
         }
+        self.region_results = {}
 
 
 class FakeLighting:
@@ -138,6 +139,24 @@ def test_region_stability_lowers_confidence_slightly():
     assert unstable.confidence < stable.confidence
     assert unstable.confidence_breakdown["region_stability_penalty"] > stable.confidence_breakdown["region_stability_penalty"]
     assert any("region stability" in warning.lower() for warning in unstable_qr.warnings)
+
+
+def test_highlight_influence_lowers_confidence_slightly():
+    matches = [_match(5.0), _match(9.0)]
+    clean_skin = FakeSkinResult(0.9, 0.9)
+    highlighted_skin = FakeSkinResult(0.9, 0.9)
+    highlighted_skin.region_results = {
+        "forehead": type("Region", (), {"highlight_patches_rejected": 3, "specular_highlight_detected": True})(),
+        "left_cheek": type("Region", (), {"highlight_patches_rejected": 1, "specular_highlight_detected": False})(),
+    }
+    clean_qr = build_quality_report(clean_skin, FakeFaceResult([]), matches)
+    highlighted_qr = build_quality_report(highlighted_skin, FakeFaceResult([]), matches)
+    clean = compute_confidence([_match(5.0)], clean_qr)[0]
+    highlighted = compute_confidence([_match(5.0)], highlighted_qr)[0]
+
+    assert highlighted.confidence < clean.confidence
+    assert highlighted.confidence_breakdown["highlight_safety_penalty"] > 0
+    assert any("highlight influence" in warning.lower() for warning in highlighted_qr.warnings)
 
 
 def test_close_match_tie_warning_and_explanation_wording():

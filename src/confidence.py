@@ -40,6 +40,7 @@ class QualityReport:
     cheek_area_balance: float = 1.0
     usable_region_count: int = 0
     region_stability: float = 1.0
+    highlight_safety: float = 1.0
     close_match_tie: bool = False
     warnings: list = field(default_factory=list)
 
@@ -102,6 +103,12 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
     region_stability = float(np.clip(stability_diagnostics.get("stability_score", 100.0) / 100.0, 0.0, 1.0))
     if region_stability < 0.7:
         warnings.extend(stability_diagnostics.get("warnings", []))
+    region_results = getattr(skin_result, "region_results", {}) or {}
+    highlight_count = sum(int(getattr(region, "highlight_patches_rejected", 0)) for region in region_results.values())
+    specular_count = sum(1 for region in region_results.values() if getattr(region, "specular_highlight_detected", False))
+    highlight_safety = float(np.clip(1.0 - 0.05 * highlight_count - 0.08 * specular_count, 0.45, 1.0))
+    if highlight_safety < 0.9:
+        warnings.append("Highlight influence was detected; confidence is reduced because the extracted tone may skew light.")
     lighting_score = float(np.clip(getattr(lighting_quality, "score", 1.0), 0.0, 1.0))
     if lighting_quality is not None:
         warnings.extend(getattr(lighting_quality, "warnings", []))
@@ -115,6 +122,7 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
         cheek_area_balance=cheek_area_balance,
         usable_region_count=usable_region_count,
         region_stability=region_stability,
+        highlight_safety=highlight_safety,
         close_match_tie=close_match_tie,
         warnings=warnings,
     )
@@ -142,6 +150,7 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
         if 0 < quality_report.usable_region_count < 3:
             raw_confidence -= 0.03 * (3 - quality_report.usable_region_count)
         raw_confidence -= 0.04 * (1.0 - quality_report.region_stability)
+        raw_confidence -= 0.04 * (1.0 - quality_report.highlight_safety)
         match.confidence = float(np.clip(raw_confidence, CONFIDENCE_FLOOR, CONFIDENCE_CEILING))
         match.confidence_breakdown = {
             "color_distance_contribution": contributions["color_distance"],
@@ -155,5 +164,6 @@ def compute_confidence(matches: list, quality_report: QualityReport, temperature
             if 0 < quality_report.usable_region_count < 3
             else 0.0,
             "region_stability_penalty": 0.04 * (1.0 - quality_report.region_stability),
+            "highlight_safety_penalty": 0.04 * (1.0 - quality_report.highlight_safety),
         }
     return matches

@@ -39,6 +39,7 @@ PATCH_LOW_SATURATION = 35.0
 MAKEUP_INFLUENCE_RATIO = 0.18
 HIGHLIGHT_INFLUENCE_RATIO = 0.18
 MAKEUP_DOWNWEIGHT_FACTOR = 0.75
+FOREHEAD_HIGHLIGHT_DOWNWEIGHT_FACTOR = 0.18
 LOW_RELIABILITY_DOWNWEIGHT_FACTOR = 0.7
 REGION_RELIABILITY_THRESHOLD = 0.45
 JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
@@ -519,6 +520,16 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
 
     forehead = reliable_by_name.get(FOREHEAD_NAME)
     if forehead is not None:
+        if forehead.specular_highlight_detected and not forehead.excluded:
+            forehead.weight_multiplier *= FOREHEAD_HIGHLIGHT_DOWNWEIGHT_FACTOR
+            reason = (
+                "Forehead showed possible specular highlight influence; its weight was strongly reduced "
+                "so central-face shine does not make the foundation target too light."
+            )
+            forehead.downweight_reason = (
+                f"{forehead.downweight_reason} {reason}" if forehead.downweight_reason else reason
+            )
+            warnings.append(forehead.downweight_reason)
         dist = _lab_distance(forehead.median_lab, anchor_lab)
         if dist > FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE:
             forehead.excluded = True
@@ -754,6 +765,55 @@ def _weighted_lab_mean(labs: np.ndarray, weights: np.ndarray) -> np.ndarray:
     return np.average(labs, axis=0, weights=weights)
 
 
+def _weighted_percentile(values: np.ndarray, weights: np.ndarray, percentile: float) -> float:
+    values = np.asarray(values, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    if len(values) == 0:
+        return 0.0
+    if weights.sum() <= 0:
+        weights = np.ones(len(values), dtype=np.float64)
+    order = np.argsort(values)
+    sorted_values = values[order]
+    sorted_weights = weights[order]
+    cumulative = np.cumsum(sorted_weights) / sorted_weights.sum()
+    return float(sorted_values[np.searchsorted(cumulative, percentile / 100.0, side="left")])
+
+
+def _foundation_target_lab_from_patches(candidates: list[dict], kept_indices: list[int], kept_weights: np.ndarray) -> np.ndarray:
+    kept_labs = np.stack([candidates[idx]["lab"] for idx in kept_indices])
+    base_lab = _weighted_lab_mean(kept_labs, kept_weights)
+
+    cheek_indices = [
+        idx
+        for idx in kept_indices
+        if candidates[idx]["region"] in CHEEK_NAMES and candidates[idx]["midtone"]
+    ]
+    if len(cheek_indices) >= 2:
+        cheek_labs = np.stack([candidates[idx]["lab"] for idx in cheek_indices])
+        cheek_weights = np.array([candidates[idx]["weight"] for idx in cheek_indices], dtype=np.float64)
+        cheek_lab = _weighted_lab_mean(cheek_labs, cheek_weights)
+        base_lab[1:] = cheek_lab[1:]
+
+    depth_indices = [
+        idx
+        for idx in kept_indices
+        if candidates[idx]["region"] in {*CHEEK_NAMES, JAWLINE_NAME} and candidates[idx]["midtone"]
+    ]
+    if len(depth_indices) >= 2:
+        depth_labs = np.stack([candidates[idx]["lab"] for idx in depth_indices])
+        depth_weights = np.array([candidates[idx]["weight"] for idx in depth_indices], dtype=np.float64)
+        for pos, idx in enumerate(depth_indices):
+            if candidates[idx]["region"] == JAWLINE_NAME:
+                depth_weights[pos] *= 1.22
+        lower_midtone_l = _weighted_percentile(depth_labs[:, 0], depth_weights, 42.0)
+        weighted_l = float(_weighted_lab_mean(depth_labs, depth_weights)[0])
+        # Use a lower-midtone L* target, but keep the shift conservative so
+        # valid lighter diffuse cheek evidence is not ignored.
+        base_lab[0] = min(base_lab[0], 0.65 * lower_midtone_l + 0.35 * weighted_l)
+
+    return base_lab
+
+
 def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None, tuple | None, dict]:
     candidates: list[dict] = []
     highlight_rejected = 0
@@ -802,6 +862,7 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         "shadow_patches_rejected": shadow_rejected,
         "midtone_patches_used": 0,
         "dominant_region_contribution": "none",
+        "foundation_depth_strategy": "region fallback",
         "fallback_reason": "",
     }
     represented_regions = {c["region"] for c in candidates}
@@ -849,7 +910,7 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         kept_labs = labs[kept_indices]
         kept_weights = adjusted_weights[kept_indices]
 
-    final_lab_array = _weighted_lab_mean(kept_labs, kept_weights)
+    final_lab_array = _foundation_target_lab_from_patches(candidates, kept_indices, kept_weights)
     final_rgb = _lab_to_rgb_tuple(final_lab_array)
     region_weight_totals: dict[str, float] = {}
     for idx, weight in zip(kept_indices, kept_weights):
@@ -864,6 +925,9 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
             "midtone_patches_used": sum(1 for idx in kept_indices if candidates[idx]["midtone"]),
             "dominant_region_contribution": (
                 f"{dominant_region.replace('_', ' ').title()} ({region_weight_totals[dominant_region] / total_weight:.0%})"
+            ),
+            "foundation_depth_strategy": (
+                "undertone from diffuse cheek patches; depth L* from reliable lower-midtone cheek/jawline patches"
             ),
         }
     )

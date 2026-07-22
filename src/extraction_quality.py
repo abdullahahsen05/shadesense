@@ -50,7 +50,7 @@ def _patch_stability_score(skin_result) -> float:
     midtone = float(patch_diag.get("midtone_patches_used", 0))
     score = 55.0 + min(used, 10.0) * 3.0 + min(midtone, used) * 1.5
     score += 10.0 * min(used / available, 1.0)
-    score -= outliers * 4.0 + min(highlight + shadow, 8.0) * 1.5
+    score -= outliers * 4.0 + min(highlight, 10.0) * 2.6 + min(shadow, 8.0) * 1.5
     return _clip_score(score)
 
 

@@ -49,6 +49,9 @@ class ShadeMatch:
 
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
 DEPTH_TIE_PENALTY = 0.35
+TOO_LIGHT_L_THRESHOLD = 4.0
+TOO_LIGHT_CLOSE_PENALTY = 0.08
+TOO_LIGHT_MAX_PENALTY = 0.55
 VARIANT_DELTA_E_WINDOW = 1.5
 VARIANT_HEX_RGB_DISTANCE = 10.0
 
@@ -67,6 +70,13 @@ def _depth_distance(estimated_depth: str, catalog_depth) -> int:
     if catalog_depth is None or pd.isna(catalog_depth):
         return 0
     return abs(DEPTH_ORDER.get(str(estimated_depth), 0) - DEPTH_ORDER.get(str(catalog_depth), DEPTH_ORDER.get(str(estimated_depth), 0)))
+
+
+def _too_light_penalty(skin_l: float, shade_l: float) -> float:
+    l_gap = float(shade_l - skin_l)
+    if l_gap <= TOO_LIGHT_L_THRESHOLD:
+        return 0.0
+    return float(np.clip((l_gap - TOO_LIGHT_L_THRESHOLD) * TOO_LIGHT_CLOSE_PENALTY, 0.0, TOO_LIGHT_MAX_PENALTY))
 
 
 def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarray:
@@ -184,6 +194,7 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
         for idx, row in catalog_df.iterrows():
             if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
                 ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
+                ranking_scores[idx] += _too_light_penalty(float(np.asarray(skin_lab, dtype=np.float64)[0]), float(row.get("lab_l")))
 
     order = np.lexsort((distances, ranking_scores))
 
