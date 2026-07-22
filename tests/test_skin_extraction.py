@@ -222,6 +222,17 @@ def test_dark_pixel_filtering_keeps_valid_deep_skin_tones():
     assert np.median(valid_rgb[:, 0]) >= 60
 
 
+def test_adaptive_dark_filter_keeps_very_deep_skin_tones():
+    very_deep_skin = np.tile(np.array([[38, 24, 18]], dtype=np.uint8), (500, 1))
+    true_shadow = np.tile(np.array([[2, 2, 2]], dtype=np.uint8), (40, 1))
+    pixels = np.vstack([very_deep_skin, true_shadow])
+
+    valid_rgb, _ = _filter_skin_pixels(pixels)
+
+    assert len(valid_rgb) >= 450
+    assert np.median(valid_rgb[:, 0]) >= 35
+
+
 def test_extraction_quality_reasons_mention_only_actual_factors():
     image, masks = _synthetic_scene(
         forehead_rgb=SIMILAR_FOREHEAD_RGB,

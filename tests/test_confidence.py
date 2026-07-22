@@ -17,10 +17,23 @@ class FakeFaceResult:
 
 
 class FakeSkinResult:
-    def __init__(self, region_consistency, avg_valid_pixel_ratio, cheek_area_balance=1.0):
+    def __init__(
+        self,
+        region_consistency,
+        avg_valid_pixel_ratio,
+        cheek_area_balance=1.0,
+        usable_region_count=4,
+    ):
         self.region_consistency = region_consistency
         self.avg_valid_pixel_ratio = avg_valid_pixel_ratio
         self.cheek_area_balance = cheek_area_balance
+        self.usable_region_count = usable_region_count
+
+
+class FakeLighting:
+    def __init__(self, score, warnings=None):
+        self.score = score
+        self.warnings = warnings or []
 
 
 def _match(delta_e, undertone="neutral"):
@@ -110,8 +123,30 @@ def test_close_match_tie_warning_and_explanation_wording():
     assert qr.close_match_tie
     assert any("Close match tie" in w for w in qr.warnings)
     text = build_explanation(matches[0], FakeSkinResult(0.9, 0.9), qr, rank=1, matches=matches)
-    assert "Close match tie" in text
+    assert "Close match tie: these shades are nearly identical" in text
     assert "equivalent candidates" in text
+
+
+def test_lighting_quality_lowers_confidence_slightly_and_breakdown_fields_exist():
+    matches = [_match(5.0), _match(9.0)]
+    good_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9), FakeFaceResult([]), matches, FakeLighting(1.0)
+    )
+    poor_qr = build_quality_report(
+        FakeSkinResult(0.9, 0.9), FakeFaceResult([]), matches, FakeLighting(0.4, ["dim"])
+    )
+    good = compute_confidence([_match(5.0)], good_qr)[0]
+    poor = compute_confidence([_match(5.0)], poor_qr)[0]
+    assert poor.confidence < good.confidence
+    assert "dim" in poor_qr.warnings
+    expected = {
+        "color_distance_contribution",
+        "region_consistency_contribution",
+        "valid_pixel_patch_contribution",
+        "lighting_quality_contribution",
+        "top_shade_separation_contribution",
+    }
+    assert expected <= set(poor.confidence_breakdown)
 
 
 def test_explanation_mentions_undertone_and_delta_e():

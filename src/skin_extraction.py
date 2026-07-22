@@ -13,7 +13,7 @@ JAWLINE_NAME = "jawline"
 
 LUMINANCE_LOWER_PERCENTILE = 10
 LUMINANCE_UPPER_PERCENTILE = 90
-MIN_ABSOLUTE_LUMINANCE = 12.0
+MIN_ABSOLUTE_LUMINANCE = 8.0
 MAX_ABSOLUTE_LUMINANCE = 96.0
 SATURATION_UPPER_PERCENTILE = 92
 MAX_ABSOLUTE_SATURATION = 170.0
@@ -119,11 +119,10 @@ def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]
     lab = _to_lab(pixels_rgb)
     saturation = _to_saturation(pixels_rgb)
     luminance = lab[:, 0]
+    median_luminance = float(np.median(luminance))
 
-    lum_low = max(
-        float(np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE)),
-        MIN_ABSOLUTE_LUMINANCE,
-    )
+    adaptive_floor = MIN_ABSOLUTE_LUMINANCE if median_luminance >= 24 else 3.0
+    lum_low = max(float(np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE)), adaptive_floor)
     lum_high = min(
         float(np.percentile(luminance, LUMINANCE_UPPER_PERCENTILE)),
         MAX_ABSOLUTE_LUMINANCE,
