@@ -7,10 +7,11 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 
-from src.color_correction import apply_mild_color_correction
+from src.color_correction import apply_mild_color_correction, correction_settings_for_lighting
 from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
+from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
 from src.lighting_quality import analyze_lighting_quality
 from src.region_masks import build_region_masks
@@ -25,7 +26,6 @@ from src.shade_catalog import (
     load_named_catalog,
 )
 from src.shade_matcher import match_shades
-from src.skin_extraction import extract_skin_tone
 from src.visualization import (
     draw_all_region_masks,
     draw_face_landmarks,
@@ -83,7 +83,8 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     image_rgb = np.array(image)
     lighting_quality = analyze_lighting_quality(image_rgb)
-    corrected_rgb, correction_notes = apply_mild_color_correction(image_rgb)
+    correction_settings = correction_settings_for_lighting(lighting_quality)
+    corrected_rgb, correction_notes = apply_mild_color_correction(image_rgb, **correction_settings)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -134,7 +135,9 @@ if uploaded_file is not None:
                 if pixel_count == 0:
                     st.caption("No usable pixels in this region.")
 
-        skin_result = extract_skin_tone(corrected_rgb, masks)
+        extraction_selection = run_dual_extraction(image_rgb, corrected_rgb, masks, lighting_quality)
+        skin_result = extraction_selection.selected
+        skin_result.extraction_quality_reasons.append(extraction_selection.reason)
 
         for warning in skin_result.warnings:
             st.warning(warning)
@@ -164,6 +167,27 @@ if uploaded_file is not None:
                     f"{region.valid_pixel_count}/{region.total_pixel_count} valid px "
                     f"({region.status_label}{patch_note})"
                 )
+
+        with st.expander("Color Correction Diagnostics"):
+            st.caption("Color Correction Diagnostics")
+            st.caption(f"Selected extraction source: {extraction_selection.selected_source}")
+            st.caption(f"Selection reason: {extraction_selection.reason}")
+            diag_cols = st.columns(3)
+            with diag_cols[0]:
+                st.image(make_skin_swatch(extraction_selection.original.rgb), caption="Original extracted swatch", width=110)
+                st.caption(f"RGB: {extraction_selection.original.rgb}")
+                st.caption(f"Lab: {tuple(round(v, 1) for v in extraction_selection.original.lab)}")
+            with diag_cols[1]:
+                st.image(make_skin_swatch(extraction_selection.corrected.rgb), caption="Corrected extracted swatch", width=110)
+                st.caption(f"RGB: {extraction_selection.corrected.rgb}")
+                st.caption(f"Lab: {tuple(round(v, 1) for v in extraction_selection.corrected.lab)}")
+            with diag_cols[2]:
+                st.image(make_skin_swatch(skin_result.rgb), caption="Final selected swatch", width=110)
+                st.caption(f"RGB: {skin_result.rgb}")
+                st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
+            st.caption(f"RGB difference: {extraction_selection.rgb_difference:.1f}")
+            st.caption(f"Lab difference: {extraction_selection.lab_difference:.1f}")
+            st.caption(f"Chroma preservation score: {extraction_selection.chroma_preservation_score:.0%}")
 
         with st.expander("Region color diagnostics"):
             st.caption("Region color diagnostics")

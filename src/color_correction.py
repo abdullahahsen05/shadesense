@@ -4,7 +4,22 @@ import cv2
 import numpy as np
 
 
-def apply_mild_color_correction(image_rgb: np.ndarray) -> tuple:
+def correction_settings_for_lighting(lighting_quality=None) -> dict:
+    """Return conservative correction settings for the current lighting.
+
+    Good lighting should preserve original color as much as possible; lower
+    quality or color-cast images can use the previous mild correction strength.
+    """
+    if lighting_quality is not None and getattr(lighting_quality, "score", 1.0) >= 0.88:
+        return {"gray_world_strength": 0.2, "clahe_clip": 1.1}
+    return {"gray_world_strength": 0.5, "clahe_clip": 1.5}
+
+
+def apply_mild_color_correction(
+    image_rgb: np.ndarray,
+    gray_world_strength: float = 0.5,
+    clahe_clip: float = 1.5,
+) -> tuple:
     """Apply a mild gray-world white balance and light CLAHE on luminance.
 
     This is intentionally conservative (not a full auto white-balance) since
@@ -15,7 +30,7 @@ def apply_mild_color_correction(image_rgb: np.ndarray) -> tuple:
         describing what corrections were applied.
     """
     notes = []
-    img = image_rgb.astype(np.float64)
+    img = image_rgb.astype(np.float64, copy=True)
 
     # --- Mild gray-world white balance ---
     mean_r = img[:, :, 0].mean()
@@ -29,7 +44,7 @@ def apply_mild_color_correction(image_rgb: np.ndarray) -> tuple:
         gain_b = mean_gray / mean_b
 
         # Dampen the correction so it is mild, not a full normalization.
-        strength = 0.5
+        strength = float(np.clip(gray_world_strength, 0.0, 1.0))
         gain_r = 1.0 + (gain_r - 1.0) * strength
         gain_g = 1.0 + (gain_g - 1.0) * strength
         gain_b = 1.0 + (gain_b - 1.0) * strength
@@ -42,7 +57,7 @@ def apply_mild_color_correction(image_rgb: np.ndarray) -> tuple:
         img[:, :, 2] *= gain_b
         notes.append(
             f"Applied mild gray-world white balance (gains r={gain_r:.2f}, "
-            f"g={gain_g:.2f}, b={gain_b:.2f})."
+            f"g={gain_g:.2f}, b={gain_b:.2f}, strength={strength:.2f})."
         )
 
     corrected = np.clip(img, 0, 255).astype(np.uint8)
@@ -50,10 +65,12 @@ def apply_mild_color_correction(image_rgb: np.ndarray) -> tuple:
     # --- Mild CLAHE on luminance channel only (preserves color/hue) ---
     lab = cv2.cvtColor(corrected, cv2.COLOR_RGB2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=float(clahe_clip), tileGridSize=(8, 8))
     l_eq = clahe.apply(l_channel)
     lab_eq = cv2.merge([l_eq, a_channel, b_channel])
     corrected = cv2.cvtColor(lab_eq, cv2.COLOR_LAB2RGB)
-    notes.append("Applied mild CLAHE (clip=1.5) on luminance to reduce shadow/highlight extremes.")
+    notes.append(
+        f"Applied mild CLAHE (clip={float(clahe_clip):.1f}) on luminance to reduce shadow/highlight extremes."
+    )
 
     return corrected, notes
