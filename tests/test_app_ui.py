@@ -21,3 +21,5 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Final Blended Swatch" in page_text
     assert "Stable patches:" in page_text
     assert "Valid pixels:" in page_text
+    assert "Reliability score:" in page_text
+    assert "Shadow/highlight ratio:" in page_text

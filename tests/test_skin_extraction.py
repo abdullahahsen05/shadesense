@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from PIL import Image
 
 from src.color_correction import apply_mild_color_correction
@@ -257,15 +258,25 @@ def test_best_patch_extraction_falls_back_safely_when_too_few_patches_survive():
     assert skin.success
 
 
-def test_dark_pixel_filtering_keeps_valid_deep_skin_tones():
-    deep_skin = np.tile(np.array([[70, 45, 34]], dtype=np.uint8), (500, 1))
+@pytest.mark.parametrize(
+    "rgb",
+    [
+        (245, 220, 200),  # fair
+        (190, 145, 112),  # medium
+        (150, 98, 70),  # tan
+        (70, 45, 34),  # deep
+        (38, 24, 18),  # rich-deep
+    ],
+)
+def test_skin_filter_keeps_valid_tones_across_depths(rgb):
+    skin_pixels = np.tile(np.array([rgb], dtype=np.uint8), (500, 1))
     shadow = np.tile(np.array([[5, 4, 4]], dtype=np.uint8), (50, 1))
-    pixels = np.vstack([deep_skin, shadow])
+    pixels = np.vstack([skin_pixels, shadow])
 
     valid_rgb, _ = _filter_skin_pixels(pixels)
 
     assert len(valid_rgb) >= 450
-    assert np.median(valid_rgb[:, 0]) >= 60
+    assert np.linalg.norm(np.median(valid_rgb, axis=0) - np.array(rgb)) < 8
 
 
 def test_adaptive_dark_filter_keeps_very_deep_skin_tones():
@@ -277,6 +288,51 @@ def test_adaptive_dark_filter_keeps_very_deep_skin_tones():
 
     assert len(valid_rgb) >= 450
     assert np.median(valid_rgb[:, 0]) >= 35
+
+
+def test_stable_patch_extraction_rejects_shadow_and_highlight_patches():
+    image = np.full((80, 80, 3), (180, 135, 105), dtype=np.uint8)
+    mask = np.ones((80, 80), dtype=np.uint8) * 255
+    image[0:24, 0:24] = (15, 10, 8)
+    image[56:80, 56:80] = (250, 246, 238)
+    patch_rgb, _, stable_count = _stable_patch_medians(
+        image, mask, region_luminance_bounds=(35.0, 75.0)
+    )
+
+    assert stable_count >= 2
+    assert np.linalg.norm(np.median(patch_rgb, axis=0) - np.array([180, 135, 105])) < 10
+
+
+def test_possible_makeup_highlight_influence_warns_and_downweights_cheek():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    image[30:50, 0:22] = (235, 75, 130)
+
+    skin = extract_skin_tone(image, masks)
+    left = skin.region_results["left_cheek"]
+
+    assert left.makeup_influence_detected
+    assert left.weight_multiplier < 1.0
+    assert any("possible makeup/highlight influence detected" in w.lower() for w in skin.warnings)
+
+
+def test_region_reliability_score_reflects_patch_and_valid_pixel_quality():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=SIMILAR_JAWLINE_RGB,
+    )
+    skin = extract_skin_tone(image, masks)
+
+    left = skin.region_results["left_cheek"]
+    assert 0.0 <= left.reliability_score <= 1.0
+    assert left.reliability_score > 0.6
+    assert any("reliability score" in r.lower() for r in skin.extraction_quality_reasons)
 
 
 def test_extraction_quality_reasons_mention_only_actual_factors():

@@ -173,7 +173,11 @@ if uploaded_file is not None:
                         st.caption(f"RGB: {region.median_rgb}")
                         st.caption(f"Lab: {region_lab}")
                         st.caption(f"Status: {region.status_label}")
+                        st.caption(f"Reliability score: {region.reliability_score:.0%}")
                         st.caption(f"Stable patches: {region.stable_patch_count}")
+                        st.caption(f"Shadow/highlight ratio: {region.shadow_highlight_ratio:.0%}")
+                        if region.makeup_influence_detected:
+                            st.caption("possible makeup/highlight influence detected.")
                         st.caption(
                             f"Valid pixels: {region.valid_pixel_count}/{region.total_pixel_count}"
                         )

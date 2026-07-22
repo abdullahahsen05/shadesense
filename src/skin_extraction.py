@@ -13,8 +13,6 @@ JAWLINE_NAME = "jawline"
 
 LUMINANCE_LOWER_PERCENTILE = 10
 LUMINANCE_UPPER_PERCENTILE = 90
-MIN_ABSOLUTE_LUMINANCE = 8.0
-MAX_ABSOLUTE_LUMINANCE = 96.0
 SATURATION_UPPER_PERCENTILE = 92
 MAX_ABSOLUTE_SATURATION = 170.0
 MIN_VALID_PIXELS_PER_REGION = 100
@@ -29,6 +27,12 @@ MIN_STABLE_PATCHES_PER_REGION = 2
 MAX_STABLE_PATCHES_PER_REGION = 8
 MAX_PATCH_LAB_STD = 8.0
 MAX_PATCH_RGB_STD = 34.0
+PATCH_LUMINANCE_MARGIN = 4.0
+MAKEUP_INFLUENCE_RATIO = 0.18
+HIGHLIGHT_INFLUENCE_RATIO = 0.18
+MAKEUP_DOWNWEIGHT_FACTOR = 0.75
+LOW_RELIABILITY_DOWNWEIGHT_FACTOR = 0.7
+REGION_RELIABILITY_THRESHOLD = 0.45
 JAWLINE_DELTA_E_DOWNWEIGHT_THRESHOLD = 14.0
 JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
 JAWLINE_HIGH_LAB_STD = 7.0
@@ -65,6 +69,9 @@ class RegionSkinResult:
     patch_fallback_used: bool = False
     lab_std: float = 0.0
     rgb_std: float = 0.0
+    shadow_highlight_ratio: float = 0.0
+    reliability_score: float = 0.0
+    makeup_influence_detected: bool = False
     warnings: list = field(default_factory=list)
 
     @property
@@ -129,21 +136,16 @@ def _to_saturation(pixels_rgb: np.ndarray) -> np.ndarray:
 
 
 def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Conservatively filter masked pixels down to plausible skin pixels."""
+    """Conservatively filter masked pixels using only region-relative extremes."""
     if len(pixels_rgb) == 0:
         return pixels_rgb, np.empty((0, 3), dtype=np.float64)
 
     lab = _to_lab(pixels_rgb)
     saturation = _to_saturation(pixels_rgb)
     luminance = lab[:, 0]
-    median_luminance = float(np.median(luminance))
 
-    adaptive_floor = MIN_ABSOLUTE_LUMINANCE if median_luminance >= 24 else 3.0
-    lum_low = max(float(np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE)), adaptive_floor)
-    lum_high = min(
-        float(np.percentile(luminance, LUMINANCE_UPPER_PERCENTILE)),
-        MAX_ABSOLUTE_LUMINANCE,
-    )
+    lum_low = float(np.percentile(luminance, LUMINANCE_LOWER_PERCENTILE))
+    lum_high = float(np.percentile(luminance, LUMINANCE_UPPER_PERCENTILE))
     if lum_low >= lum_high:
         lum_low, lum_high = float(np.min(luminance)), float(np.max(luminance))
 
@@ -153,9 +155,9 @@ def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]
     )
 
     red_dominance = (
-        (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 1].astype(np.int16) > 48)
-        & (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 2].astype(np.int16) > 48)
-        & (saturation > 115)
+        (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 1].astype(np.int16) > 70)
+        & (pixels_rgb[:, 0].astype(np.int16) - pixels_rgb[:, 2].astype(np.int16) > 85)
+        & (saturation > 130)
     )
 
     keep = (
@@ -170,6 +172,7 @@ def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]
 def _stable_patch_medians(
     image_rgb: np.ndarray,
     mask: np.ndarray,
+    region_luminance_bounds: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Return RGB/Lab medians from the most stable patches in a mask."""
     ys, xs = np.where(mask > 0)
@@ -195,6 +198,11 @@ def _stable_patch_medians(
             rgb_std = float(np.mean(np.std(valid_rgb.astype(np.float64), axis=0)))
             if lab_std > MAX_PATCH_LAB_STD or rgb_std > MAX_PATCH_RGB_STD:
                 continue
+            if region_luminance_bounds is not None:
+                patch_l = float(np.median(valid_lab[:, 0]))
+                low_l, high_l = region_luminance_bounds
+                if patch_l < low_l - PATCH_LUMINANCE_MARGIN or patch_l > high_l + PATCH_LUMINANCE_MARGIN:
+                    continue
 
             stable.append(
                 (
@@ -231,9 +239,32 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             warnings=[f"No pixels found for {name}; region mask was empty."],
         )
 
+    raw_lab = _to_lab(pixels)
+    raw_luminance = raw_lab[:, 0]
+    raw_saturation = _to_saturation(pixels)
+    region_luminance_bounds = (
+        float(np.percentile(raw_luminance, LUMINANCE_LOWER_PERCENTILE)),
+        float(np.percentile(raw_luminance, LUMINANCE_UPPER_PERCENTILE)),
+    )
     valid_pixels_rgb, valid_lab = _filter_skin_pixels(pixels)
     valid_count = int(len(valid_pixels_rgb))
     valid_ratio = valid_count / total_count if total_count else 0.0
+    shadow_highlight_ratio = float(1.0 - valid_ratio)
+    red_pink = (
+        (pixels[:, 0].astype(np.int16) - pixels[:, 1].astype(np.int16) > 70)
+        & (pixels[:, 0].astype(np.int16) - pixels[:, 2].astype(np.int16) > 85)
+        & (raw_saturation > 130)
+    )
+    median_luminance = float(np.median(raw_luminance))
+    high_luminance = float(np.percentile(raw_luminance, 96))
+    bright_highlight = (raw_luminance >= high_luminance) & (
+        raw_luminance - median_luminance > PATCH_LUMINANCE_MARGIN * 2
+    )
+    makeup_ratio = float(np.mean(red_pink)) if total_count else 0.0
+    highlight_ratio = float(np.mean(bright_highlight & (raw_saturation < 80))) if total_count else 0.0
+    makeup_influence_detected = (
+        name in CHEEK_NAMES and makeup_ratio >= MAKEUP_INFLUENCE_RATIO
+    ) or highlight_ratio >= HIGHLIGHT_INFLUENCE_RATIO
 
     if valid_count < MIN_VALID_PIXELS_PER_REGION:
         warnings.append(
@@ -253,7 +284,9 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
             warnings=warnings,
         )
 
-    patch_rgb, patch_lab, stable_patch_count = _stable_patch_medians(image_rgb, mask)
+    patch_rgb, patch_lab, stable_patch_count = _stable_patch_medians(
+        image_rgb, mask, region_luminance_bounds=region_luminance_bounds
+    )
     patch_fallback_used = len(patch_rgb) == 0
     if patch_fallback_used:
         median_rgb = tuple(np.median(valid_pixels_rgb, axis=0).astype(int).tolist())
@@ -271,6 +304,21 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         lab_std = float(np.mean(np.std(patch_lab, axis=0)))
         rgb_std = float(np.mean(np.std(patch_rgb.astype(np.float64), axis=0)))
 
+    stable_patch_score = min(stable_patch_count / max(MIN_STABLE_PATCHES_PER_REGION, 1), 1.0)
+    variance_score = float(np.clip(1.0 - lab_std / max(MAX_PATCH_LAB_STD, 1.0), 0.0, 1.0))
+    reliability_score = float(
+        np.clip(
+            0.45 * valid_ratio
+            + 0.25 * stable_patch_score
+            + 0.20 * variance_score
+            + 0.10 * (1.0 - min(shadow_highlight_ratio, 1.0)),
+            0.0,
+            1.0,
+        )
+    )
+    if makeup_influence_detected:
+        warnings.append(f"{name.replace('_', ' ').title()}: possible makeup/highlight influence detected.")
+
     return RegionSkinResult(
         name=name,
         total_pixel_count=total_count,
@@ -283,6 +331,9 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         patch_fallback_used=patch_fallback_used,
         lab_std=lab_std,
         rgb_std=rgb_std,
+        shadow_highlight_ratio=shadow_highlight_ratio,
+        reliability_score=reliability_score,
+        makeup_influence_detected=makeup_influence_detected,
         warnings=warnings,
     )
 
@@ -336,8 +387,8 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     - Forehead: excluded outright if it disagrees strongly with the cheek
       tone (likely hair/fringe or shadow contamination).
     - Jawline: never excluded, but its combination weight is reduced when
-      it is specifically darker than the cheeks (possible facial hair or
-      chin/neck shadow), since a jawline that is off-color in other ways
+      it is specifically darker than the cheeks (possible chin/neck shadow,
+      contour, occlusion, or uneven lighting), since a jawline that is off-color in other ways
       may still carry useful skin-tone signal.
 
     No-ops (returns no warnings) if no cheek region is reliable, since
@@ -347,6 +398,30 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     anchor_lab = _cheek_anchor_lab(reliable_by_name)
     if anchor_lab is None:
         return warnings
+
+    for region in reliable_by_name.values():
+        if region.makeup_influence_detected and not region.excluded:
+            region.weight_multiplier *= MAKEUP_DOWNWEIGHT_FACTOR
+            reason = "Possible makeup/highlight influence detected; region weight was reduced."
+            region.downweight_reason = (
+                f"{region.downweight_reason} {reason}" if region.downweight_reason else reason
+            )
+            warnings.append(f"{region.name.replace('_', ' ').title()}: {reason}")
+
+        if region.reliability_score < REGION_RELIABILITY_THRESHOLD and not region.excluded:
+            reason = (
+                f"Region reliability is low ({region.reliability_score:.2f}) due to valid-pixel, "
+                "stable-patch, variance, or shadow/highlight signals."
+            )
+            if region.name == FOREHEAD_NAME:
+                region.excluded = True
+                region.exclusion_reason = reason
+            else:
+                region.weight_multiplier *= LOW_RELIABILITY_DOWNWEIGHT_FACTOR
+                region.downweight_reason = (
+                    f"{region.downweight_reason} {reason}" if region.downweight_reason else reason
+                )
+            warnings.append(f"{region.name.replace('_', ' ').title()}: {reason}")
 
     forehead = reliable_by_name.get(FOREHEAD_NAME)
     if forehead is not None:
@@ -483,6 +558,9 @@ def _build_extraction_quality_reasons(region_results: dict, skin_result_fields: 
             )
         if region.status_reason:
             reasons.append(f"{name.replace('_', ' ').title()}: {region.status_reason}")
+        reasons.append(
+            f"{name.replace('_', ' ').title()}: reliability score {region.reliability_score:.0%}."
+        )
 
     if skin_result_fields.get("usable_region_count", 0) < 3:
         reasons.append("Fewer than 3 regions were usable, so extraction confidence is reduced slightly.")
@@ -499,8 +577,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     takes the median RGB/Lab. Cheeks anchor the trust check: forehead is
     excluded outright if it disagrees strongly with the cheeks (likely
     hair/shadow contamination); jawline is down-weighted, not excluded,
-    when it is specifically darker than the cheeks (possible facial hair
-    or chin shadow). The remaining (non-excluded) reliable regions are
+    when it is specifically darker than the cheeks (possible chin/neck shadow,
+    contour, occlusion, or uneven lighting). The remaining (non-excluded) reliable regions are
     combined, weighted by valid pixel count and any down-weighting, into
     one final skin color.
     """
