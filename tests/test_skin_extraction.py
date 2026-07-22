@@ -8,9 +8,12 @@ from src.region_masks import build_region_masks
 from src.skin_extraction import (
     JAWLINE_DOWNWEIGHT_FACTOR,
     MIN_VALID_PIXELS_PER_REGION,
+    _assert_skimage_lab_scale,
     extract_skin_tone,
     _filter_skin_pixels,
+    _lab_distance,
     _stable_patch_medians,
+    _to_lab,
 )
 
 SAMPLES = PROJECT_ROOT / "data" / "sample_images"
@@ -89,6 +92,18 @@ def test_color_correction_returns_notes_and_valid_image():
     assert len(notes) > 0
 
 
+def test_lab_conversion_uses_cie_l_star_scale_and_rejects_opencv_scale():
+    lab = _to_lab(np.array([[255, 255, 255], [0, 0, 0]], dtype=np.uint8))
+    assert 0.0 <= lab[:, 0].min() <= lab[:, 0].max() <= 100.0
+    _assert_skimage_lab_scale(lab)
+    import pytest
+
+    with pytest.raises(ValueError):
+        _assert_skimage_lab_scale(np.array([[255.0, 128.0, 128.0]]))
+    with pytest.raises(ValueError):
+        _lab_distance((50.0, 0.0, 0.0), (255.0, 0.0, 0.0))
+
+
 # --- Exclusion / down-weight metadata (synthetic, deterministic) ---
 
 CHEEK_RGB = (215, 180, 160)
@@ -158,6 +173,37 @@ def test_jawline_full_weight_when_similar_to_cheeks():
     jawline = skin.region_results["jawline"]
     assert jawline.weight_multiplier == 1.0
     assert jawline.downweight_reason is None
+
+
+def test_jawline_not_downweighted_when_lab_color_close_to_cheeks():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=(205, 174, 157),
+    )
+    skin = extract_skin_tone(image, masks)
+
+    jawline = skin.region_results["jawline"]
+    assert jawline.weight_multiplier == 1.0
+    assert jawline.downweight_reason is None
+
+
+def test_jawline_downweighted_when_contains_shadow_patches():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=CHEEK_RGB,
+    )
+    image[60:80, 0:45] = (65, 42, 32)
+    skin = extract_skin_tone(image, masks)
+
+    jawline = skin.region_results["jawline"]
+    assert jawline.weight_multiplier < 1.0
+    assert jawline.downweight_reason is not None
+    assert "chin/neck shadow, contour, occlusion, or uneven lighting" in jawline.downweight_reason
+    assert "facial hair" not in jawline.downweight_reason.lower()
 
 
 def test_asymmetric_cheek_valid_area_warns_without_excluding_cheeks():

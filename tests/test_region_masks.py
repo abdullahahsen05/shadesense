@@ -60,6 +60,18 @@ def test_cheek_masks_are_reasonably_balanced_on_front_facing_face():
     assert balance >= 0.45, f"cheek mask areas too imbalanced: left={left}, right={right}"
 
 
+def test_jawline_mask_avoids_central_chin_region():
+    img = _load("face_astronaut.png")
+    result = detect_face_landmarks(img)
+    masks = build_region_masks(img.shape, result.landmarks)
+    jawline = masks["jawline"] > 0
+    ys, xs = np.where(jawline)
+    assert len(xs) > 0
+    face_center_x = np.mean([p[0] for p in result.landmarks])
+    central = np.abs(xs - face_center_x) < img.shape[1] * 0.04
+    assert central.mean() < 0.20
+
+
 def test_masks_align_across_pose_and_lighting_variants():
     variants = [
         "face_astronaut.png",

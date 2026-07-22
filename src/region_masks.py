@@ -96,6 +96,33 @@ def _cheek_polygon_mask(
     return _mask_from_points(points, image_shape)
 
 
+def _side_jaw_mask(
+    oval_pts: np.ndarray,
+    face_center_x: float,
+    face_width: float,
+    upper_y: float,
+    lower_y: float,
+    side: str,
+    image_shape,
+) -> np.ndarray:
+    """Build a side-jaw sampling band while avoiding central chin/neck."""
+    sign = -1.0 if side == "left" else 1.0
+    mid_y = (upper_y + lower_y) / 2.0
+    outer_x = _x_at_y(oval_pts, mid_y, side, face_center_x + sign * 0.44 * face_width)
+    inner_upper_x = face_center_x + sign * 0.26 * face_width
+    inner_lower_x = face_center_x + sign * 0.20 * face_width
+    points = np.array(
+        [
+            [inner_upper_x, upper_y],
+            [outer_x, upper_y],
+            [outer_x, lower_y],
+            [inner_lower_x, lower_y],
+        ],
+        dtype=np.float64,
+    )
+    return _mask_from_points(points, image_shape)
+
+
 def build_region_masks(image_shape, landmarks) -> dict:
     """Build cheek, forehead, and jawline masks from face landmarks.
 
@@ -194,9 +221,19 @@ def build_region_masks(image_shape, landmarks) -> dict:
             ),
         )
 
-    # --- Jawline: oval points below the mouth-bottom line (the chin/jaw arc). ---
-    jaw_oval = oval_pts[oval_pts[:, 1] >= mouth_bottom_y + margin_h] if len(oval_pts) else np.empty((0, 2))
-    jawline_mask = _mask_from_points(jaw_oval, image_shape)
+    # --- Jawline: side-jaw skin, not central chin/under-chin. The older
+    # under-mouth convex hull could pick up neck shadow or the central chin
+    # crease. These side bands prefer lower-cheek/side-jaw skin and leave the
+    # central chin area out unless future explicit landmarks justify it.
+    jaw_upper_y = mouth_top_y + 0.04 * face_height
+    jaw_lower_y = min(mouth_bottom_y + 0.10 * face_height, chin_y - 0.08 * face_height)
+    if jaw_lower_y > jaw_upper_y:
+        jawline_mask = cv2.bitwise_or(
+            _side_jaw_mask(oval_pts, face_center_x, face_width, jaw_upper_y, jaw_lower_y, "left", image_shape),
+            _side_jaw_mask(oval_pts, face_center_x, face_width, jaw_upper_y, jaw_lower_y, "right", image_shape),
+        )
+    else:
+        jawline_mask = empty.copy()
 
     # Remove eyes/eyebrows/lips from every region as a safety net in case the
     # convex hulls above happen to bulge into them.

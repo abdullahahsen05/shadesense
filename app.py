@@ -160,6 +160,32 @@ if uploaded_file is not None:
                     f"({region.status_label}{patch_note})"
                 )
 
+        with st.expander("Region color diagnostics"):
+            st.caption("Region color diagnostics")
+            for region_name, region in skin_result.region_results.items():
+                st.markdown(f"**{region_name.replace('_', ' ').title()}**")
+                if region.median_rgb is not None:
+                    diag_cols = st.columns([1, 3])
+                    with diag_cols[0]:
+                        st.image(make_skin_swatch(region.median_rgb), width=90)
+                    with diag_cols[1]:
+                        region_lab = tuple(round(v, 1) for v in region.median_lab)
+                        st.caption(f"RGB: {region.median_rgb}")
+                        st.caption(f"Lab: {region_lab}")
+                        st.caption(f"Status: {region.status_label}")
+                        st.caption(f"Stable patches: {region.stable_patch_count}")
+                        st.caption(
+                            f"Valid pixels: {region.valid_pixel_count}/{region.total_pixel_count}"
+                        )
+                else:
+                    st.caption(f"Status: {region.status_label}")
+                    st.caption(f"Valid pixels: {region.valid_pixel_count}/{region.total_pixel_count}")
+            st.markdown("**Final Blended Swatch**")
+            if skin_result.success:
+                st.image(make_skin_swatch(skin_result.rgb), width=90)
+                st.caption(f"RGB: {skin_result.rgb}")
+                st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
+
         st.subheader("Extraction Quality Reasons")
         if skin_result.extraction_quality_reasons:
             for reason in skin_result.extraction_quality_reasons:

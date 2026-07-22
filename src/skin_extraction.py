@@ -29,6 +29,10 @@ MIN_STABLE_PATCHES_PER_REGION = 2
 MAX_STABLE_PATCHES_PER_REGION = 8
 MAX_PATCH_LAB_STD = 8.0
 MAX_PATCH_RGB_STD = 34.0
+JAWLINE_DELTA_E_DOWNWEIGHT_THRESHOLD = 14.0
+JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
+JAWLINE_HIGH_LAB_STD = 7.0
+JAWLINE_LOW_VALID_RATIO = 0.45
 
 # Forehead is useful but optional: if it disagrees strongly with the cheek
 # tone (full Lab distance), it is excluded outright — likely hair/fringe or
@@ -59,6 +63,8 @@ class RegionSkinResult:
     downweight_reason: str | None = None
     stable_patch_count: int = 0
     patch_fallback_used: bool = False
+    lab_std: float = 0.0
+    rgb_std: float = 0.0
     warnings: list = field(default_factory=list)
 
     @property
@@ -102,7 +108,18 @@ class SkinToneResult:
 
 def _to_lab(pixels_rgb: np.ndarray) -> np.ndarray:
     """Convert an (N, 3) uint8 RGB pixel array to (N, 3) Lab floats."""
-    return rgb2lab(pixels_rgb.reshape(-1, 1, 3).astype(np.float64) / 255.0).reshape(-1, 3)
+    lab = rgb2lab(pixels_rgb.reshape(-1, 1, 3).astype(np.float64) / 255.0).reshape(-1, 3)
+    _assert_skimage_lab_scale(lab)
+    return lab
+
+
+def _assert_skimage_lab_scale(lab: np.ndarray) -> None:
+    """Guard against accidental OpenCV Lab scale entering the pipeline."""
+    if lab.size == 0:
+        return
+    l_values = np.asarray(lab, dtype=np.float64).reshape(-1, 3)[:, 0]
+    if np.nanmin(l_values) < -1e-6 or np.nanmax(l_values) > 100.0 + 1e-6:
+        raise ValueError("Lab values must use skimage/CIE L*=0-100 scale, not OpenCV L=0-255.")
 
 
 def _to_saturation(pixels_rgb: np.ndarray) -> np.ndarray:
@@ -241,6 +258,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
     if patch_fallback_used:
         median_rgb = tuple(np.median(valid_pixels_rgb, axis=0).astype(int).tolist())
         median_lab = tuple(np.median(valid_lab, axis=0).tolist())
+        lab_std = float(np.mean(np.std(valid_lab, axis=0)))
+        rgb_std = float(np.mean(np.std(valid_pixels_rgb.astype(np.float64), axis=0)))
         if stable_patch_count > 0:
             warnings.append(
                 f"{name.replace('_', ' ').title()} had only {stable_patch_count} stable patch(es); "
@@ -249,6 +268,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
     else:
         median_rgb = tuple(np.median(patch_rgb, axis=0).astype(int).tolist())
         median_lab = tuple(np.median(patch_lab, axis=0).tolist())
+        lab_std = float(np.mean(np.std(patch_lab, axis=0)))
+        rgb_std = float(np.mean(np.std(patch_rgb.astype(np.float64), axis=0)))
 
     return RegionSkinResult(
         name=name,
@@ -260,6 +281,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         reliable=valid_count >= MIN_VALID_PIXELS_PER_REGION,
         stable_patch_count=stable_patch_count if not patch_fallback_used else 0,
         patch_fallback_used=patch_fallback_used,
+        lab_std=lab_std,
+        rgb_std=rgb_std,
         warnings=warnings,
     )
 
@@ -279,6 +302,7 @@ def _region_consistency(regions: list) -> float:
 
 
 def _lab_distance(a, b) -> float:
+    _assert_skimage_lab_scale(np.array([a, b], dtype=np.float64))
     return float(np.linalg.norm(np.array(a, dtype=np.float64) - np.array(b, dtype=np.float64)))
 
 
@@ -338,12 +362,21 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
 
     jawline = reliable_by_name.get(JAWLINE_NAME)
     if jawline is not None:
+        delta_e = _lab_distance(jawline.median_lab, anchor_lab)
         darkness_gap = anchor_lab[0] - jawline.median_lab[0]
-        if darkness_gap > JAWLINE_DARKNESS_L_THRESHOLD:
+        quality_concern = (
+            jawline.lab_std > JAWLINE_HIGH_LAB_STD
+            or jawline.valid_ratio < JAWLINE_LOW_VALID_RATIO
+            or darkness_gap > JAWLINE_DARKNESS_L_THRESHOLD
+        )
+        if delta_e > JAWLINE_DELTA_E_DOWNWEIGHT_THRESHOLD or (
+            delta_e > JAWLINE_QUALITY_DELTA_E_THRESHOLD and quality_concern
+        ):
             jawline.weight_multiplier = JAWLINE_DOWNWEIGHT_FACTOR
             jawline.downweight_reason = (
-                f"Jawline is noticeably darker than the cheeks (L difference {darkness_gap:.1f}); "
-                "its weight in the final estimate was reduced (possible facial hair or chin shadow)."
+                f"Jawline differs from cheek tone (Delta E {delta_e:.1f}, L difference {darkness_gap:.1f}); "
+                "its weight in the final estimate was reduced (possible chin/neck shadow, "
+                "contour, occlusion, or uneven lighting)."
             )
             warnings.append(jawline.downweight_reason)
 
