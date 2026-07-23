@@ -10,3 +10,4 @@ outputs/debug/*
 .DS_Store
 Thumbs.db
 models/*.task
+data/public_catalog_raw/

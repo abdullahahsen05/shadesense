@@ -1,12 +1,14 @@
 # ShadeSense AI
 
-A local-first computer-vision app that analyzes a facial image and recommends the
-Top 3 most suitable cosmetic foundation shades from a shade catalog, with confidence
-scores and short explanations.
+ShadeSense AI is a local-first computer-vision app for foundation shade
+recommendation. It analyzes a facial image, extracts a robust skin-tone estimate
+from cheek, forehead, and jawline regions, and recommends the Top 3 closest
+foundation shades from a local catalog with match confidence and explanations.
 
 ## Status
 
-Local working app only. No deployment, backend service, database, or auth in this build.
+Local working app only. No deployment, backend service, database, or auth in this
+build.
 
 ## Requirements
 
@@ -28,40 +30,63 @@ python scripts/download_model.py   # fetches MediaPipe's face_landmarker.task (~
 streamlit run app.py
 ```
 
-Then open the local URL Streamlit prints (usually http://localhost:8501).
+Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 
 ## Usage
 
-1. Upload a facial photo (jpg/png/bmp).
-2. The app detects the face and landmarks.
-3. Cheek, forehead, and jawline masks are extracted.
-4. A representative skin color is computed from filtered skin pixels.
-5. The skin color is matched against the selected local catalog using CIEDE2000
+1. Upload a facial photo, such as JPG, PNG, or BMP.
+2. The app detects the face and MediaPipe face landmarks.
+3. Cheek, forehead, and jawline masks are extracted while avoiding eyes, lips,
+   eyebrows, hairline, and under-chin shadow where possible.
+4. A representative skin color is computed from stable diffuse skin patches.
+5. The app separates measured visible skin tone from foundation target tone when
+   glossy highlights could bias rich/deep skin recommendations too light.
+6. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space.
-6. The app shows the Top 3 shade recommendations with confidence scores and reasoning.
+7. The app shows visually distinct Top 3 shade recommendations with confidence
+   scores, diagnostics, and reasoning.
 
 ## Project Structure
 
 ```text
 shadesense-ai/
-├── app.py                 # Streamlit UI only
-├── requirements.txt
-├── data/
-│   ├── shade_catalog_mock.csv
-│   └── sample_images/
-├── src/                   # CV / matching logic (no Streamlit imports)
-│   ├── config.py
-│   ├── face_detection.py
-│   ├── region_masks.py
-│   ├── color_correction.py
-│   ├── skin_extraction.py
-│   ├── shade_catalog.py
-│   ├── shade_matcher.py
-│   ├── confidence.py
-│   ├── explanation.py
-│   └── visualization.py
-├── tests/
-└── outputs/debug/
+app.py                 # Streamlit UI only
+requirements.txt
+data/
+  shade_catalog_mock.csv
+  public_shade_catalog.csv
+  sample_images/
+src/                   # CV and matching logic
+  face_detection.py
+  region_masks.py
+  color_correction.py
+  lighting_quality.py
+  image_quality.py
+  skin_extraction.py
+  extraction_quality.py
+  shade_catalog.py
+  shade_matcher.py
+  confidence.py
+  explanation.py
+  visualization.py
+scripts/
+  prepare_public_catalog.py
+tests/
+docs/
+```
+
+## Core Pipeline
+
+```text
+image upload
+-> lighting and capture-quality diagnostics
+-> MediaPipe face detection and landmarks
+-> cheek / forehead / jawline masks
+-> adaptive skin-pixel filtering
+-> stable patch extraction and robust Lab aggregation
+-> optional depth-safe foundation target adjustment
+-> CIEDE2000 shade matching with duplicate candidate grouping
+-> Top 3 recommendations, confidence, and explanations
 ```
 
 ## Shade Catalog
@@ -75,8 +100,7 @@ python scripts/prepare_public_catalog.py
 ```
 
 `data/shade_catalog_mock.csv` remains available as a small development fallback
-catalog (18 shades). The app lets you choose between the public and mock
-catalogs.
+catalog. The app lets you choose between the public and mock catalogs.
 
 Mock catalog schema:
 
@@ -94,6 +118,15 @@ See `docs/catalog_setup.md` for setup details and limitations. Public swatch
 colors are website-derived approximations, not guaranteed matches to real
 applied foundation.
 
+The app does not scrape Sephora, Kaggle, or any live website at runtime.
+
+## Tests
+
+```bash
+pytest tests/ -v
+python -m compileall src scripts app.py
+```
+
 ## Known Limitations
 
-See `docs/limitations.md` (added as phases progress) for current pipeline limitations.
+See `docs/limitations.md` for current pipeline limitations.
