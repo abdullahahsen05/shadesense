@@ -45,3 +45,38 @@ def test_lighting_quality_flags_broad_glossy_highlights():
     assert result.strong_highlights
     assert result.score < 1.0
     assert any("glossy shine" in warning.lower() or "highlights" in warning.lower() for warning in result.warnings)
+
+
+def test_face_region_lighting_ignores_bright_background():
+    image = np.full((120, 160, 3), 248, dtype=np.uint8)
+    image[30:100, 45:115] = (145, 105, 82)
+    mask = np.zeros((120, 160), dtype=np.uint8)
+    mask[35:95, 50:110] = 255
+    masks = {"left_cheek": mask.copy(), "right_cheek": mask.copy()}
+
+    global_quality = analyze_lighting_quality(image)
+    face_quality = analyze_lighting_quality(image, masks=masks)
+
+    assert face_quality.using_face_regions
+    assert not face_quality.overexposed
+    assert face_quality.score > global_quality.score
+    assert "facial skin regions" in face_quality.explanation
+
+
+def test_face_region_lighting_reports_asymmetric_cheeks():
+    image = np.full((100, 140, 3), 120, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[30:75, 20:60] = 255
+    right[30:75, 80:120] = 255
+    image[left > 0] = (65, 50, 45)
+    image[right > 0] = (180, 145, 125)
+
+    quality = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert quality.uneven_lighting
+    assert quality.left_right_gap > 24
+    assert set(quality.region_metrics) == {"left_cheek", "right_cheek"}

@@ -91,16 +91,18 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     image_rgb = np.array(image)
-    lighting_quality = analyze_lighting_quality(image_rgb)
-    correction_settings = correction_settings_for_lighting(lighting_quality)
-    corrected_rgb, correction_notes = apply_mild_color_correction(image_rgb, **correction_settings)
+    global_lighting_quality = analyze_lighting_quality(image_rgb)
+    provisional_settings = correction_settings_for_lighting(global_lighting_quality)
+    provisional_corrected_rgb, _ = apply_mild_color_correction(
+        image_rgb, **provisional_settings
+    )
 
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Uploaded Image")
         st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
 
-    face_result = detect_face_landmarks(corrected_rgb)
+    face_result = detect_face_landmarks(provisional_corrected_rgb)
     image_quality = analyze_image_quality(
         image_rgb, face_result.landmarks if face_result.success else None
     )
@@ -111,6 +113,13 @@ if uploaded_file is not None:
     if not face_result.success:
         st.error(face_result.error)
     else:
+        masks = build_region_masks(image_rgb.shape, face_result.landmarks)
+        lighting_quality = analyze_lighting_quality(image_rgb, masks=masks)
+        correction_settings = correction_settings_for_lighting(lighting_quality)
+        corrected_rgb, correction_notes = apply_mild_color_correction(
+            image_rgb, **correction_settings
+        )
+
         with st.expander("Lighting correction notes"):
             for note in correction_notes:
                 st.caption(note)
@@ -138,10 +147,16 @@ if uploaded_file is not None:
         st.subheader("Lighting Quality")
         st.metric("Lighting quality score", f"{lighting_quality.score:.0%}")
         st.caption(lighting_quality.explanation)
+        if lighting_quality.using_face_regions:
+            st.caption(
+                f"Face highlight ratio {lighting_quality.face_highlight_ratio:.1%} · "
+                f"shadow ratio {lighting_quality.face_shadow_ratio:.1%} · "
+                f"left/right gap {lighting_quality.left_right_gap:.1f} · "
+                f"central/lower gap {lighting_quality.central_lower_gap:.1f}."
+            )
         for warning in lighting_quality.warnings:
             st.warning(warning)
 
-        masks = build_region_masks(corrected_rgb.shape, face_result.landmarks)
         extraction_selection = run_dual_extraction(
             image_rgb, corrected_rgb, masks, lighting_quality, extraction_mode
         )

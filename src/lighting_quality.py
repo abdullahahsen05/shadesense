@@ -17,30 +17,118 @@ class LightingQuality:
     strong_shadow_contrast: bool = False
     strong_highlights: bool = False
     color_cast: bool = False
+    using_face_regions: bool = False
+    face_highlight_ratio: float = 0.0
+    face_shadow_ratio: float = 0.0
+    face_luminance_spread: float = 0.0
+    left_right_gap: float = 0.0
+    central_lower_gap: float = 0.0
+    region_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
-def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
-    """Return a gentle lighting-quality score and caveats for confidence."""
+def _region_metric(image_rgb: np.ndarray, gray: np.ndarray, mask: np.ndarray) -> dict[str, float]:
+    pixels = image_rgb[mask > 0].astype(np.float64)
+    luma = gray[mask > 0]
+    if len(luma) == 0:
+        return {}
+    p05, p25, p50, p75, p95, p99 = np.percentile(luma, [5, 25, 50, 75, 95, 99])
+    means = np.mean(pixels, axis=0)
+    channel_average = float(np.mean(means))
+    cast_strength = float(np.max(np.abs(means - channel_average))) if channel_average else 0.0
+    return {
+        "mean_luma": float(np.mean(luma)),
+        "median_luma": float(p50),
+        "shadow_ratio": float(np.mean(luma < 45)),
+        "highlight_ratio": float(np.mean(luma > 225)),
+        "broad_highlight_ratio": float(np.mean(luma > 205)),
+        "luminance_spread": float(p95 - p05),
+        "interquartile_range": float(p75 - p25),
+        "highlight_gap": float(p99 - p75),
+        "color_cast_strength": cast_strength,
+        "pixel_count": float(len(luma)),
+    }
+
+
+def _valid_region_masks(masks: dict | None, image_shape: tuple) -> dict[str, np.ndarray]:
+    if not masks:
+        return {}
+    h, w = image_shape[:2]
+    return {
+        name: np.asarray(mask, dtype=np.uint8)
+        for name, mask in masks.items()
+        if name != "combined"
+        and mask is not None
+        and np.asarray(mask).shape == (h, w)
+        and np.any(np.asarray(mask) > 0)
+    }
+
+
+def analyze_lighting_quality(
+    image_rgb: np.ndarray,
+    masks: dict | None = None,
+) -> LightingQuality:
+    """Assess lighting globally or, when available, on facial skin regions.
+
+    Face-region statistics prevent a bright wall or dark background from
+    dominating the lighting decision used by skin extraction.
+    """
     if image_rgb is None or image_rgb.size == 0:
         return LightingQuality(score=0.0, warnings=["No image data available."], explanation="No image data available.")
 
     image = image_rgb.astype(np.float64)
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY).astype(np.float64)
-    mean_luma = float(np.mean(gray))
-    p05, p25, p75, p90, p95, p99 = [float(v) for v in np.percentile(gray, [5, 25, 75, 90, 95, 99])]
+    region_masks = _valid_region_masks(masks, image_rgb.shape)
+    region_metrics = {
+        name: _region_metric(image_rgb, gray, mask)
+        for name, mask in region_masks.items()
+    }
+    region_metrics = {name: metric for name, metric in region_metrics.items() if metric}
+    using_face_regions = bool(region_metrics)
+
+    if using_face_regions:
+        combined_mask = np.zeros(gray.shape, dtype=np.uint8)
+        for mask in region_masks.values():
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+        sample_gray = gray[combined_mask > 0]
+        sample_image = image_rgb[combined_mask > 0].astype(np.float64)
+    else:
+        sample_gray = gray.reshape(-1)
+        sample_image = image.reshape(-1, 3)
+
+    mean_luma = float(np.mean(sample_gray))
+    p05, p25, p75, p90, p95, p99 = [
+        float(v) for v in np.percentile(sample_gray, [5, 25, 75, 90, 95, 99])
+    ]
     shadow_contrast = p95 - p05
-    highlight_ratio = float(np.mean(gray > 225))
-    broad_highlight_ratio = float(np.mean(gray > 205))
+    highlight_ratio = float(np.mean(sample_gray > 225))
+    broad_highlight_ratio = float(np.mean(sample_gray > 205))
+    shadow_ratio = float(np.mean(sample_gray < 45))
     highlight_gap = p99 - p75
 
-    h, w = gray.shape
-    left_mean = float(np.mean(gray[:, : max(1, w // 2)]))
-    right_mean = float(np.mean(gray[:, w // 2 :]))
-    top_mean = float(np.mean(gray[: max(1, h // 2), :]))
-    bottom_mean = float(np.mean(gray[h // 2 :, :]))
-    uneven_gap = max(abs(left_mean - right_mean), abs(top_mean - bottom_mean))
+    if using_face_regions:
+        left_mean = region_metrics.get("left_cheek", {}).get("median_luma", mean_luma)
+        right_mean = region_metrics.get("right_cheek", {}).get("median_luma", mean_luma)
+        left_right_gap = abs(left_mean - right_mean)
+        central_values = [
+            region_metrics[name]["median_luma"]
+            for name in ("forehead", "left_cheek", "right_cheek")
+            if name in region_metrics
+        ]
+        central_mean = float(np.mean(central_values)) if central_values else mean_luma
+        lower_mean = region_metrics.get("jawline", {}).get("median_luma", central_mean)
+        central_lower_gap = central_mean - lower_mean
+        uneven_gap = max(left_right_gap, abs(central_lower_gap))
+    else:
+        h, w = gray.shape
+        left_mean = float(np.mean(gray[:, : max(1, w // 2)]))
+        right_mean = float(np.mean(gray[:, w // 2 :]))
+        top_mean = float(np.mean(gray[: max(1, h // 2), :]))
+        bottom_mean = float(np.mean(gray[h // 2 :, :]))
+        left_right_gap = abs(left_mean - right_mean)
+        central_lower_gap = top_mean - bottom_mean
+        uneven_gap = max(left_right_gap, abs(central_lower_gap))
 
-    channel_means = np.mean(image.reshape(-1, 3), axis=0)
+    channel_means = np.mean(sample_image.reshape(-1, 3), axis=0)
     channel_avg = float(np.mean(channel_means))
     cast_strength = float(np.max(np.abs(channel_means - channel_avg))) if channel_avg else 0.0
 
@@ -48,9 +136,11 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
     score = 1.0
     underexposed = mean_luma < 70 or p75 < 85
     overexposed = mean_luma > 205 or p25 > 185
-    uneven_lighting = uneven_gap > 36
+    uneven_lighting = uneven_gap > (24 if using_face_regions else 36)
     strong_shadow_contrast = shadow_contrast > 185
-    strong_highlights = highlight_ratio > 0.025 or (broad_highlight_ratio > 0.08 and highlight_gap > 35)
+    strong_highlights = highlight_ratio > 0.025 or (
+        broad_highlight_ratio > 0.08 and highlight_gap > 35
+    )
     color_cast = cast_strength > 22
 
     if underexposed:
@@ -60,7 +150,7 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
         score -= 0.20
         warnings.append("Image appears overexposed; highlight or glare may shift the extracted tone.")
     if uneven_lighting:
-        score -= 0.16
+        score -= 0.18
         warnings.append("Lighting appears uneven across the face/image.")
     if strong_shadow_contrast:
         score -= 0.14
@@ -73,8 +163,9 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
         warnings.append("Possible color cast detected; white balance may affect shade matching.")
 
     score = float(np.clip(score, 0.25, 1.0))
+    scope = "facial skin regions" if using_face_regions else "full image"
     explanation = (
-        f"Mean luminance {mean_luma:.0f}/255, shadow range {shadow_contrast:.0f}, "
+        f"Measured on {scope}: mean luminance {mean_luma:.0f}/255, shadow range {shadow_contrast:.0f}, "
         f"uneven-lighting gap {uneven_gap:.0f}, highlight ratio {highlight_ratio:.1%}, "
         f"color-cast strength {cast_strength:.0f}."
     )
@@ -91,4 +182,11 @@ def analyze_lighting_quality(image_rgb: np.ndarray) -> LightingQuality:
         strong_shadow_contrast=strong_shadow_contrast,
         strong_highlights=strong_highlights,
         color_cast=color_cast,
+        using_face_regions=using_face_regions,
+        face_highlight_ratio=highlight_ratio,
+        face_shadow_ratio=shadow_ratio,
+        face_luminance_spread=shadow_contrast,
+        left_right_gap=float(left_right_gap),
+        central_lower_gap=float(central_lower_gap),
+        region_metrics=region_metrics,
     )
