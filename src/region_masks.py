@@ -137,6 +137,122 @@ def _inset_region_mask(mask: np.ndarray, face_width: float, strength: float = 0.
     return eroded if np.any(eroded) else mask
 
 
+def _expanded_eye_zone(landmarks, image_shape, face_width: float, face_height: float) -> np.ndarray:
+    """Return a conservative glasses/reflection exclusion band."""
+    h, w = image_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    eye_points = _pts(landmarks, EYE_INDICES)
+    if len(eye_points) < MIN_POLYGON_POINTS:
+        return mask
+    x0 = int(np.clip(np.min(eye_points[:, 0]) - 0.06 * face_width, 0, w - 1))
+    x1 = int(np.clip(np.max(eye_points[:, 0]) + 0.06 * face_width, 0, w - 1))
+    y0 = int(np.clip(np.min(eye_points[:, 1]) - 0.04 * face_height, 0, h - 1))
+    y1 = int(np.clip(np.max(eye_points[:, 1]) + 0.10 * face_height, 0, h - 1))
+    if x1 > x0 and y1 > y0:
+        mask[y0 : y1 + 1, x0 : x1 + 1] = 255
+    return mask
+
+
+def refine_masks_for_capture(
+    image_rgb: np.ndarray,
+    masks: dict,
+    landmarks,
+    pose_asymmetry: float | None = None,
+) -> tuple[dict, dict]:
+    """Remove likely eyewear reflections and reduce a foreshortened cheek.
+
+    Refinement only removes pixels and falls back to the original mask if a
+    candidate edit would erase too much of a region.
+    """
+    refined = {
+        name: np.asarray(mask, dtype=np.uint8).copy()
+        for name, mask in masks.items()
+    }
+    diagnostics = {
+        "eyewear_reflection_detected": False,
+        "eye_zone_edge_density": 0.0,
+        "eye_zone_reflection_ratio": 0.0,
+        "pose_reduced_region": None,
+        "warnings": [],
+    }
+    if image_rgb is None or image_rgb.size == 0 or not landmarks:
+        return refined, diagnostics
+
+    points = np.asarray(landmarks, dtype=np.float64)
+    face_width = max(float(np.ptp(points[:, 0])), 1.0)
+    face_height = max(float(np.ptp(points[:, 1])), 1.0)
+    eye_zone = _expanded_eye_zone(landmarks, image_rgb.shape, face_width, face_height)
+    zone_pixels = eye_zone > 0
+    if np.any(zone_pixels):
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+        edges = cv2.Canny(gray, 60, 150)
+        edge_density = float(np.mean(edges[zone_pixels] > 0))
+        value = hsv[:, :, 2]
+        saturation = hsv[:, :, 1]
+        neutral_glare = (value > 205) & (saturation < 100)
+        colored_glare = (
+            (value > 135)
+            & (saturation > 45)
+            & (hsv[:, :, 0] >= 30)
+            & (hsv[:, :, 0] <= 105)
+        )
+        reflection_ratio = float(
+            np.mean((neutral_glare | colored_glare)[zone_pixels])
+        )
+        eyewear_detected = bool(
+            edge_density > 0.075
+            and (reflection_ratio > 0.012 or edge_density > 0.14)
+        )
+        diagnostics.update(
+            {
+                "eyewear_reflection_detected": eyewear_detected,
+                "eye_zone_edge_density": edge_density,
+                "eye_zone_reflection_ratio": reflection_ratio,
+            }
+        )
+        if eyewear_detected:
+            keep = cv2.bitwise_not(eye_zone)
+            for name in ("left_cheek", "right_cheek"):
+                candidate = cv2.bitwise_and(refined[name], keep)
+                if np.count_nonzero(candidate) >= 0.45 * max(
+                    np.count_nonzero(refined[name]), 1
+                ):
+                    refined[name] = candidate
+            diagnostics["warnings"].append(
+                "Eyewear edges or lens reflections were detected; upper-cheek "
+                "pixels near the frames were excluded."
+            )
+
+    if pose_asymmetry is not None and pose_asymmetry > 0.18 and len(points) > 263:
+        nose_x = float(points[1, 0])
+        left_span = abs(nose_x - float(points[33, 0]))
+        right_span = abs(float(points[263, 0]) - nose_x)
+        reduced_name = "left_cheek" if left_span < right_span else "right_cheek"
+        radius = int(np.clip(round(face_width * 0.018), 2, 10))
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
+        )
+        candidate = cv2.erode(refined[reduced_name], kernel, iterations=1)
+        if np.count_nonzero(candidate) >= 0.35 * max(
+            np.count_nonzero(refined[reduced_name]), 1
+        ):
+            refined[reduced_name] = candidate
+            diagnostics["pose_reduced_region"] = reduced_name
+            diagnostics["warnings"].append(
+                f"{reduced_name.replace('_', ' ').title()} evidence was reduced "
+                "because the cheek is foreshortened by pose."
+            )
+
+    refined["combined"] = (
+        refined["forehead"]
+        | refined["left_cheek"]
+        | refined["right_cheek"]
+        | refined["jawline"]
+    )
+    return refined, diagnostics
+
+
 def build_region_masks(image_shape, landmarks) -> dict:
     """Build cheek, forehead, and jawline masks from face landmarks.
 

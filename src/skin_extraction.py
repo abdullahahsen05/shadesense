@@ -171,6 +171,7 @@ class SkinToneResult:
     uncertainty_diagnostics: dict = field(default_factory=dict)
     lighting_sensitivity_labs: list = field(default_factory=list)
     lighting_sensitivity_diagnostics: dict = field(default_factory=dict)
+    capture_region_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None

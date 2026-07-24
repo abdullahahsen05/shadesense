@@ -17,7 +17,7 @@ from src.image_quality import analyze_image_quality
 from src.image_io import open_rgb_image
 from src.lighting_quality import analyze_lighting_quality
 from src.lighting_sensitivity import analyze_lighting_sensitivity
-from src.region_masks import build_region_masks
+from src.region_masks import build_region_masks, refine_masks_for_capture
 from src.recommendation_readiness import build_recommendation_readiness
 from src.shade_catalog import (
     MOCK_CATALOG_KEY,
@@ -131,6 +131,12 @@ if uploaded_file is not None:
         st.error(face_result.error)
     else:
         masks = build_region_masks(image_rgb.shape, face_result.landmarks)
+        masks, mask_capture_diagnostics = refine_masks_for_capture(
+            image_rgb,
+            masks,
+            face_result.landmarks,
+            pose_asymmetry=image_quality.pose_asymmetry,
+        )
         lighting_quality = analyze_lighting_quality(image_rgb, masks=masks)
         correction_settings = correction_settings_for_lighting(lighting_quality)
         corrected_rgb, correction_notes = apply_mild_color_correction(
@@ -173,11 +179,14 @@ if uploaded_file is not None:
             )
         for warning in lighting_quality.warnings:
             st.warning(warning)
+        for warning in mask_capture_diagnostics["warnings"]:
+            st.warning(warning)
 
         extraction_selection = run_dual_extraction(
             image_rgb, corrected_rgb, masks, lighting_quality, extraction_mode
         )
         skin_result = extraction_selection.selected
+        skin_result.capture_region_diagnostics = mask_capture_diagnostics
         skin_result.extraction_quality_reasons.append(extraction_selection.reason)
         sensitivity_source_rgb = (
             image_rgb
