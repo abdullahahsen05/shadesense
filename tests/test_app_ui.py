@@ -83,9 +83,15 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Extraction Uncertainty" in page_text
     assert "Bootstrap samples:" in page_text
     assert "90th-percentile uncertainty radius:" in page_text
+    assert "Lighting Sensitivity" in page_text
+    assert "Sensitivity score:" in page_text
+    assert "90th-percentile perturbation shift:" in page_text
+    assert "Usable perturbations:" in page_text
     assert "Product type:" in page_text
     assert "catalog evidence" in page_text
+    assert "Distribution-aware ranking Delta E:" in page_text
     assert "Bootstrap stability:" in page_text
+    assert "Lighting sensitivity:" in page_text
 
 
 def test_capture_guidance_text_exists():

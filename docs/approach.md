@@ -15,12 +15,13 @@ input image
 -> adaptive stable patches with local highlight/shadow metrics
 -> weighted CIEDE2000 medoid + MAD outlier rejection with region caps
 -> 96-sample stratified patch bootstrap for Lab uncertainty
+-> deterministic exposure / white-balance / gamma sensitivity re-extraction
 -> evidence-gated foundation target L* with cheek-derived undertone
 -> Skin Extraction Quality score (image capture, region reliability, patch
    stability, lighting safety, color consistency, and region stability)
--> CIEDE2000 distance against the shade catalog (Lab space) with close-tie-only
-   depth, supported-lightness, and catalog-evidence adjustments
--> Top 3 recommendations retained across bootstrap samples
+-> distribution-aware CIEDE2000 ranking using central, median, and tail distances,
+   with close-tie-only depth, supported-lightness, and catalog-evidence adjustments
+-> Top 3 recommendations evaluated across bootstrap and lighting-sensitivity samples
 -> readiness-aware Match confidence + deterministic explanation text
 ```
 

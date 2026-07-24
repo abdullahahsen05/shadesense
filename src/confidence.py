@@ -43,6 +43,8 @@ class QualityReport:
     highlight_safety: float = 1.0
     extraction_uncertainty: float = 1.0
     uncertainty_radius: float = 0.0
+    lighting_sensitivity: float = 1.0
+    lighting_sensitivity_radius: float = 0.0
     close_match_tie: bool = False
     warnings: list = field(default_factory=list)
 
@@ -125,6 +127,19 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
         )
     if lighting_quality is not None:
         warnings.extend(getattr(lighting_quality, "warnings", []))
+    sensitivity_diagnostics = (
+        getattr(skin_result, "lighting_sensitivity_diagnostics", {}) or {}
+    )
+    lighting_sensitivity = float(
+        np.clip(sensitivity_diagnostics.get("score", 100.0) / 100.0, 0.0, 1.0)
+    )
+    lighting_sensitivity_radius = float(
+        sensitivity_diagnostics.get("delta_e_p90", 0.0)
+    )
+    if lighting_sensitivity_radius > 3.0:
+        warnings.append(
+            "Recommendations changed under small simulated exposure or white-balance variations."
+        )
 
     return QualityReport(
         region_consistency=getattr(skin_result, "region_consistency", 0.0),
@@ -138,6 +153,8 @@ def build_quality_report(skin_result, face_result, matches: list, lighting_quali
         highlight_safety=highlight_safety,
         extraction_uncertainty=extraction_uncertainty,
         uncertainty_radius=uncertainty_radius,
+        lighting_sensitivity=lighting_sensitivity,
+        lighting_sensitivity_radius=lighting_sensitivity_radius,
         close_match_tie=close_match_tie,
         warnings=warnings,
     )
@@ -156,7 +173,10 @@ def compute_confidence(
     every candidate in the list.
     """
     for match in matches:
-        closeness = float(np.exp(-match.delta_e / temperature))
+        effective_delta_e = getattr(match, "distribution_delta_e", None)
+        if effective_delta_e is None:
+            effective_delta_e = match.delta_e
+        closeness = float(np.exp(-float(effective_delta_e) / temperature))
         top1_stability = getattr(match, "recommendation_stability", None)
         top3_stability = getattr(match, "top3_stability", None)
         if top1_stability is None or top3_stability is None:
@@ -164,6 +184,15 @@ def compute_confidence(
         else:
             recommendation_stability = float(
                 np.clip(0.4 * top1_stability + 0.6 * top3_stability, 0.0, 1.0)
+            )
+        lighting_top1 = getattr(match, "lighting_recommendation_stability", None)
+        lighting_top3 = getattr(match, "lighting_top3_stability", None)
+        if lighting_top1 is not None and lighting_top3 is not None:
+            lighting_rank_stability = float(
+                np.clip(0.4 * lighting_top1 + 0.6 * lighting_top3, 0.0, 1.0)
+            )
+            recommendation_stability = (
+                0.7 * recommendation_stability + 0.3 * lighting_rank_stability
             )
         catalog_quality = float(
             np.clip(getattr(match, "catalog_quality_score", 0.5), 0.0, 1.0)
@@ -187,6 +216,7 @@ def compute_confidence(
             raw_confidence -= 0.03 * (3 - quality_report.usable_region_count)
         raw_confidence -= 0.04 * (1.0 - quality_report.region_stability)
         raw_confidence -= 0.04 * (1.0 - quality_report.highlight_safety)
+        raw_confidence -= 0.06 * (1.0 - quality_report.lighting_sensitivity)
         confidence_ceiling = min(
             CONFIDENCE_CEILING,
             float(getattr(readiness, "confidence_cap", CONFIDENCE_CEILING)),
@@ -196,6 +226,7 @@ def compute_confidence(
         )
         match.confidence_breakdown = {
             "color_distance_contribution": contributions["color_distance"],
+            "distribution_delta_e": float(effective_delta_e),
             "region_consistency_contribution": contributions["region_consistency"],
             "valid_pixel_patch_contribution": contributions["valid_pixel_patch"],
             "lighting_quality_contribution": contributions["lighting_quality"],
@@ -215,5 +246,7 @@ def compute_confidence(
             else 0.0,
             "region_stability_penalty": 0.04 * (1.0 - quality_report.region_stability),
             "highlight_safety_penalty": 0.04 * (1.0 - quality_report.highlight_safety),
+            "lighting_sensitivity_penalty": 0.06
+            * (1.0 - quality_report.lighting_sensitivity),
         }
     return matches

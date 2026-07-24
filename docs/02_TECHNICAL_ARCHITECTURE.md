@@ -132,6 +132,7 @@ def match_shades(
     catalog_df: pd.DataFrame,
     top_k: int = 3,
     uncertainty_labs=None,
+    lighting_sensitivity_labs=None,
 ) -> list[ShadeMatch]:
     ...
 ```
@@ -142,8 +143,8 @@ Responsibilities:
 - Apply penalties for poor image quality.
 - Apply penalties for region disagreement.
 - Apply penalties when Top 1 and Top 2 are too close.
-- Include patch-bootstrap uncertainty, recommendation stability, and catalog
-  evidence.
+- Include patch-bootstrap uncertainty, lighting sensitivity, recommendation
+  stability, and catalog evidence.
 - Enforce readiness-specific confidence caps.
 
 Expected functions:

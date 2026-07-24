@@ -49,8 +49,12 @@ class ShadeMatch:
     catalog_quality_score: float = 0.5
     recommendation_stability: float | None = None
     top3_stability: float | None = None
+    lighting_recommendation_stability: float | None = None
+    lighting_top3_stability: float | None = None
+    lighting_delta_e_p90: float | None = None
     delta_e_median: float | None = None
     delta_e_p90: float | None = None
+    distribution_delta_e: float | None = None
     uncertainty_adjustment: float = 0.0
 
 
@@ -75,6 +79,7 @@ STABILITY_SHORTLIST_SIZE = 100
 POINT_DISTANCE_WEIGHT = 0.45
 UNCERTAINTY_MEDIAN_WEIGHT = 0.40
 UNCERTAINTY_TAIL_WEIGHT = 0.15
+LIGHTING_EVIDENCE_SHARE = 0.30
 
 
 def _normalize_key_text(value) -> str:
@@ -229,6 +234,7 @@ def _row_to_match(
         if median_distances is not None
         else None,
         delta_e_p90=float(p90_distances[idx]) if p90_distances is not None else None,
+        distribution_delta_e=distribution_score,
         uncertainty_adjustment=distribution_score - float(distances[idx]),
         rank=rank,
     )
@@ -362,11 +368,38 @@ def _apply_uncertainty_stability(
         candidate.delta_e_p90 = float(np.percentile(distances[:, idx], 90))
 
 
+def _apply_lighting_stability(
+    candidates: list[ShadeMatch],
+    lighting_sensitivity_labs,
+) -> None:
+    samples = _coerce_lab_samples(lighting_sensitivity_labs)
+    if samples is None or not candidates:
+        return
+    shortlist = candidates[:STABILITY_SHORTLIST_SIZE]
+    labs = np.asarray([candidate.lab for candidate in shortlist], dtype=np.float64)
+    sample_grid = np.repeat(samples[:, None, :], len(shortlist), axis=1)
+    catalog_grid = np.repeat(labs[None, :, :], len(samples), axis=0)
+    distances = deltaE_ciede2000(sample_grid, catalog_grid)
+    order = np.argsort(distances, axis=1)
+    top_count = min(3, len(shortlist))
+    for idx, candidate in enumerate(shortlist):
+        candidate.lighting_recommendation_stability = float(
+            np.mean(order[:, 0] == idx)
+        )
+        candidate.lighting_top3_stability = float(
+            np.mean(np.any(order[:, :top_count] == idx, axis=1))
+        )
+        candidate.lighting_delta_e_p90 = float(
+            np.percentile(distances[:, idx], 90)
+        )
+
+
 def match_shades(
     skin_lab,
     catalog_df: pd.DataFrame,
     top_k: int = 3,
     uncertainty_labs=None,
+    lighting_sensitivity_labs=None,
 ) -> list:
     """Rank catalog shades by perceptual distance to the extracted skin color.
 
@@ -384,15 +417,35 @@ def match_shades(
         uncertainty_median_distances,
         uncertainty_p90_distances,
     ) = _distribution_distance_statistics(catalog_lab, uncertainty_labs)
+    (
+        lighting_distance_grid,
+        lighting_median_distances,
+        lighting_p90_distances,
+    ) = _distribution_distance_statistics(catalog_lab, lighting_sensitivity_labs)
     estimated_depth = estimate_depth_from_lab_l(float(np.asarray(skin_lab, dtype=np.float64)[0]))
     best_delta = float(np.min(distances))
-    if uncertainty_distance_grid is None:
+    if uncertainty_distance_grid is None and lighting_distance_grid is None:
         distribution_scores = distances.copy()
     else:
+        if uncertainty_distance_grid is None:
+            evidence_median = lighting_median_distances
+            evidence_p90 = lighting_p90_distances
+        elif lighting_distance_grid is None:
+            evidence_median = uncertainty_median_distances
+            evidence_p90 = uncertainty_p90_distances
+        else:
+            evidence_median = (
+                (1.0 - LIGHTING_EVIDENCE_SHARE) * uncertainty_median_distances
+                + LIGHTING_EVIDENCE_SHARE * lighting_median_distances
+            )
+            evidence_p90 = (
+                (1.0 - LIGHTING_EVIDENCE_SHARE) * uncertainty_p90_distances
+                + LIGHTING_EVIDENCE_SHARE * lighting_p90_distances
+            )
         distribution_scores = (
             POINT_DISTANCE_WEIGHT * distances
-            + UNCERTAINTY_MEDIAN_WEIGHT * uncertainty_median_distances
-            + UNCERTAINTY_TAIL_WEIGHT * uncertainty_p90_distances
+            + UNCERTAINTY_MEDIAN_WEIGHT * evidence_median
+            + UNCERTAINTY_TAIL_WEIGHT * evidence_p90
         )
     metadata_penalties = np.zeros_like(distances)
     ranking_scores = distribution_scores.copy()
@@ -430,12 +483,17 @@ def match_shades(
             ranking_scores,
             estimated_depth,
             metadata_penalties=metadata_penalties,
-            median_distances=uncertainty_median_distances,
-            p90_distances=uncertainty_p90_distances,
+            median_distances=evidence_median
+            if uncertainty_distance_grid is not None or lighting_distance_grid is not None
+            else None,
+            p90_distances=evidence_p90
+            if uncertainty_distance_grid is not None or lighting_distance_grid is not None
+            else None,
             distribution_scores=distribution_scores,
         )
         ranked_candidates.append(candidate)
 
     grouped_candidates = _group_ranked_candidates(ranked_candidates)
     _apply_uncertainty_stability(grouped_candidates, uncertainty_labs)
+    _apply_lighting_stability(grouped_candidates, lighting_sensitivity_labs)
     return _select_visually_distinct_matches(grouped_candidates, top_k)

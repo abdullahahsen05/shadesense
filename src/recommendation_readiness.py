@@ -25,13 +25,19 @@ def build_recommendation_readiness(
     uncertainty = getattr(skin_result, "uncertainty_diagnostics", {}) or {}
     radius = float(uncertainty.get("delta_e_radius_p90", 12.0))
     stability = float(uncertainty.get("stability_score", 45.0))
+    sensitivity = (
+        getattr(skin_result, "lighting_sensitivity_diagnostics", {}) or {}
+    )
+    sensitivity_score = float(sensitivity.get("score", 100.0))
+    sensitivity_radius = float(sensitivity.get("delta_e_p90", 0.0))
     success = bool(getattr(skin_result, "success", False))
 
     combined = float(
         np.clip(
             0.50 * extraction_score
-            + 0.25 * (lighting_score * 100.0)
-            + 0.25 * stability,
+            + 0.15 * (lighting_score * 100.0)
+            + 0.20 * stability
+            + 0.15 * sensitivity_score,
             0.0,
             100.0,
         )
@@ -40,9 +46,17 @@ def build_recommendation_readiness(
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
         f"Bootstrap uncertainty radius {radius:.1f} Delta E (90th percentile).",
+        f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
 
-    if success and extraction_score >= 70.0 and lighting_score >= 0.65 and radius <= 6.0:
+    if (
+        success
+        and extraction_score >= 70.0
+        and lighting_score >= 0.65
+        and radius <= 6.0
+        and sensitivity_score >= 70.0
+        and sensitivity_radius <= 3.0
+    ):
         return RecommendationReadiness(
             state="ready",
             score=combined,
@@ -50,7 +64,12 @@ def build_recommendation_readiness(
             summary="Recommendation evidence is ready for comparison with the catalog.",
             reasons=reasons,
         )
-    if success and extraction_score >= 50.0 and radius <= 10.0:
+    if (
+        success
+        and extraction_score >= 50.0
+        and radius <= 10.0
+        and sensitivity_radius <= 6.0
+    ):
         return RecommendationReadiness(
             state="caution",
             score=combined,

@@ -432,6 +432,37 @@ def test_invalid_uncertainty_samples_leave_point_ranking_unchanged():
     assert all(match.delta_e_median is None for match in matches)
 
 
+def test_lighting_sensitivity_samples_influence_ranking_and_stability():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["point", "stable", "far"],
+            "brand": ["Point", "Stable", "Far"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Point", "Stable", "Far"],
+            "hex": ["#806050", "#8A6858", "#A08070"],
+            "r": [128, 138, 160],
+            "g": [96, 104, 128],
+            "b": [80, 88, 112],
+            "lab_l": [50.0, 54.0, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    lighting_samples = np.repeat([[54.0, 8.0, 14.0]], repeats=6, axis=0)
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=2,
+        lighting_sensitivity_labs=lighting_samples,
+    )
+
+    assert matches[0].shade_id == "stable"
+    assert matches[0].lighting_recommendation_stability == 1.0
+    assert matches[0].lighting_top3_stability == 1.0
+    assert matches[0].lighting_delta_e_p90 == 0.0
+
+
 def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
     assert _too_light_penalty(50.0, 57.0) > 0.0
     assert _too_light_penalty(50.0, 57.0, supported_upper_l=55.0) == 0.0

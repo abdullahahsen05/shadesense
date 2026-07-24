@@ -8,12 +8,21 @@ from src.recommendation_readiness import (
 from src.shade_matcher import ShadeMatch
 
 
-def _skin(radius: float, stability: float = 80.0):
+def _skin(
+    radius: float,
+    stability: float = 80.0,
+    sensitivity_score: float = 100.0,
+    sensitivity_radius: float = 0.0,
+):
     return SimpleNamespace(
         success=True,
         uncertainty_diagnostics={
             "delta_e_radius_p90": radius,
             "stability_score": stability,
+        },
+        lighting_sensitivity_diagnostics={
+            "score": sensitivity_score,
+            "delta_e_p90": sensitivity_radius,
         },
     )
 
@@ -43,6 +52,29 @@ def test_readiness_thresholds_are_deterministic():
     assert (caution.state, caution.confidence_cap) == ("caution", 0.75)
     assert (provisional.state, provisional.confidence_cap) == ("provisional", 0.55)
     assert "Top 3" in provisional.warnings[0]
+
+
+def test_lighting_sensitivity_can_downgrade_readiness():
+    ready = build_recommendation_readiness(
+        _skin(4.0, 90.0, sensitivity_score=90.0, sensitivity_radius=2.0),
+        {"overall_score": 80.0},
+        _lighting(0.85),
+    )
+    caution = build_recommendation_readiness(
+        _skin(4.0, 90.0, sensitivity_score=55.0, sensitivity_radius=5.0),
+        {"overall_score": 80.0},
+        _lighting(0.85),
+    )
+    provisional = build_recommendation_readiness(
+        _skin(4.0, 90.0, sensitivity_score=25.0, sensitivity_radius=8.0),
+        {"overall_score": 80.0},
+        _lighting(0.85),
+    )
+
+    assert ready.state == "ready"
+    assert caution.state == "caution"
+    assert provisional.state == "provisional"
+    assert "Lighting sensitivity" in provisional.reasons[-1]
 
 
 def test_provisional_state_caps_match_confidence_but_keeps_match():

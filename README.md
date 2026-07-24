@@ -42,13 +42,15 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
    jawline regions instead of the image background.
 5. A representative skin color is computed from adaptive diffuse patches using
    a CIEDE2000 medoid, robust outlier rejection, and bounded region influence.
-6. Deterministic patch bootstrapping quantifies extraction and recommendation
-   stability.
+6. Deterministic patch bootstrapping quantifies extraction uncertainty; central,
+   median, and 90th-percentile CIEDE2000 evidence all influence ranking.
 7. The app separates measured visible skin tone from foundation target tone when
    glossy highlights could bias rich/deep skin recommendations too light.
-8. The target color is matched against the selected local catalog using CIEDE2000
+8. Six conservative exposure, white-balance, and gamma perturbations test whether
+   extraction and shade rankings remain stable under plausible capture variation.
+9. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space, with metadata affecting only close ties.
-9. The app always shows visually distinct Top 3 candidates with readiness-aware
+10. The app always shows visually distinct Top 3 candidates with readiness-aware
    confidence, uncertainty diagnostics, and reasoning.
 
 ## Project Structure

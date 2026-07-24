@@ -17,6 +17,7 @@ from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
 from src.image_quality import analyze_image_quality
 from src.lighting_quality import analyze_lighting_quality
+from src.lighting_sensitivity import analyze_lighting_sensitivity
 from src.region_masks import build_region_masks
 from src.recommendation_readiness import build_recommendation_readiness
 from src.shade_catalog import (
@@ -179,6 +180,21 @@ if uploaded_file is not None:
         )
         skin_result = extraction_selection.selected
         skin_result.extraction_quality_reasons.append(extraction_selection.reason)
+        sensitivity_source_rgb = (
+            image_rgb
+            if extraction_selection.selected_source == "original"
+            else corrected_rgb
+        )
+        lighting_sensitivity = analyze_lighting_sensitivity(
+            sensitivity_source_rgb,
+            masks,
+            skin_result,
+        )
+        skin_result.lighting_sensitivity_labs = lighting_sensitivity.variant_labs
+        skin_result.lighting_sensitivity_diagnostics = (
+            lighting_sensitivity.as_diagnostics()
+        )
+        skin_result.warnings.extend(lighting_sensitivity.warnings)
         extraction_quality_report = build_extraction_quality_report(
             skin_result,
             image_quality=image_quality,
@@ -407,6 +423,20 @@ if uploaded_file is not None:
             if uncertainty_diag.get("l_interval_90"):
                 lower_l, upper_l = uncertainty_diag["l_interval_90"]
                 st.caption(f"90% L* interval: {lower_l:.1f}–{upper_l:.1f}")
+            sensitivity_diag = skin_result.lighting_sensitivity_diagnostics or {}
+            st.markdown("**Lighting Sensitivity**")
+            st.caption(
+                f"Sensitivity score: {sensitivity_diag.get('score', 0.0):.0f}/100"
+            )
+            st.caption(
+                "90th-percentile perturbation shift: "
+                f"{sensitivity_diag.get('delta_e_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                "Usable perturbations: "
+                f"{sensitivity_diag.get('successful_variants', 0)}/"
+                f"{sensitivity_diag.get('attempted_variants', 0)}"
+            )
             if patch_diag.get("fallback_reason"):
                 st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")
             stability_diag = skin_result.stability_diagnostics or {}
@@ -515,6 +545,7 @@ if uploaded_file is not None:
                     catalog_df,
                     top_k=TOP_K_SHADES,
                     uncertainty_labs=skin_result.bootstrap_labs,
+                    lighting_sensitivity_labs=skin_result.lighting_sensitivity_labs,
                 )
 
                 if not matches:
@@ -572,11 +603,23 @@ if uploaded_file is not None:
                                     f"separation {match.confidence_breakdown['top_shade_separation_contribution']:.2f}."
                                 )
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
+                            if match.distribution_delta_e is not None:
+                                st.caption(
+                                    "Distribution-aware ranking Delta E: "
+                                    f"{match.distribution_delta_e:.2f}"
+                                )
                             if match.recommendation_stability is not None:
                                 st.caption(
                                     f"Bootstrap stability: Top 1 {match.recommendation_stability:.0%} · "
                                     f"Top 3 {match.top3_stability:.0%} · "
                                     f"90th-percentile Delta E {match.delta_e_p90:.1f}"
+                                )
+                            if match.lighting_recommendation_stability is not None:
+                                st.caption(
+                                    "Lighting sensitivity: "
+                                    f"Top 1 {match.lighting_recommendation_stability:.0%} · "
+                                    f"Top 3 {match.lighting_top3_stability:.0%} · "
+                                    f"90th-percentile Delta E {match.lighting_delta_e_p90:.1f}"
                                 )
                             if match.undertone or match.depth:
                                 st.caption(
