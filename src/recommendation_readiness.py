@@ -13,6 +13,9 @@ class RecommendationReadiness:
     summary: str
     reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    capture_readiness_score: float = 0.0
+    shade_family_stability_score: float = 0.0
+    exact_product_stability_score: float = 0.0
 
 
 def build_recommendation_readiness(
@@ -46,6 +49,7 @@ def build_recommendation_readiness(
         capture_regions.get("eyewear_reflection_detected", False)
     )
     rank_score = 100.0
+    exact_rank_score = 100.0
     bootstrap_family_top3 = 1.0
     lighting_family_top3 = 1.0
     if matches:
@@ -76,23 +80,35 @@ def build_recommendation_readiness(
             + 0.20 * lighting_family_top1
             + 0.30 * lighting_family_top3
         )
+        exact_rank_score = 100.0 * (
+            0.20 * float(getattr(best, "recommendation_stability", 0.0) or 0.0)
+            + 0.30 * float(getattr(best, "top3_stability", 0.0) or 0.0)
+            + 0.20
+            * float(
+                getattr(best, "lighting_recommendation_stability", 0.0) or 0.0
+            )
+            + 0.30
+            * float(getattr(best, "lighting_top3_stability", 0.0) or 0.0)
+        )
 
     capture_certainty = float(np.clip(100.0 * (1.0 - radius / 12.0), 0.0, 100.0))
     sensitivity_certainty = float(
         np.clip(100.0 * (1.0 - sensitivity_radius / 8.0), 0.0, 100.0)
     )
-    combined = float(
+    capture_readiness_score = float(
         np.clip(
-            0.40 * extraction_score
-            + 0.13 * (lighting_score * 100.0)
-            + 0.12 * stability
-            + 0.10 * capture_certainty
+            0.43 * extraction_score
+            + 0.14 * (lighting_score * 100.0)
+            + 0.13 * stability
+            + 0.11 * capture_certainty
             + 0.10 * sensitivity_score
-            + 0.10 * sensitivity_certainty
-            + 0.05 * rank_score,
+            + 0.09 * sensitivity_certainty,
             0.0,
             100.0,
         )
+    )
+    combined = float(
+        np.clip(0.95 * capture_readiness_score + 0.05 * rank_score, 0.0, 100.0)
     )
     if eyewear_detected:
         combined = max(combined - 4.0, 0.0)
@@ -102,6 +118,7 @@ def build_recommendation_readiness(
         f"Bootstrap uncertainty radius {local_radius:.1f} Delta E (local patches).",
         f"Total capture uncertainty radius {radius:.1f} Delta E.",
         f"Shade-family ranking stability {rank_score:.0f}/100.",
+        f"Exact-product ranking stability {exact_rank_score:.0f}/100.",
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
     if eyewear_detected:
@@ -124,6 +141,9 @@ def build_recommendation_readiness(
                 "Retake the photo in brighter, even daylight. The Top 3 remain "
                 "visible as provisional candidates only."
             ],
+            capture_readiness_score=capture_readiness_score,
+            shade_family_stability_score=rank_score,
+            exact_product_stability_score=exact_rank_score,
         )
 
     if (
@@ -145,6 +165,9 @@ def build_recommendation_readiness(
             confidence_cap=confidence_cap,
             summary="Recommendation evidence is ready for comparison with the catalog.",
             reasons=reasons,
+            capture_readiness_score=capture_readiness_score,
+            shade_family_stability_score=rank_score,
+            exact_product_stability_score=exact_rank_score,
         )
     if (
         success
@@ -165,6 +188,9 @@ def build_recommendation_readiness(
             summary="Recommendations are usable with caution; image or extraction evidence is limited.",
             reasons=reasons,
             warnings=["Consider retaking the photo in soft, even daylight for a more stable ranking."],
+            capture_readiness_score=capture_readiness_score,
+            shade_family_stability_score=rank_score,
+            exact_product_stability_score=exact_rank_score,
         )
     return RecommendationReadiness(
         state="provisional",
@@ -176,4 +202,7 @@ def build_recommendation_readiness(
             "Retake the photo in soft daylight with both cheeks and the jawline visible. "
             "The Top 3 are shown as provisional candidates, not dependable final matches."
         ],
+        capture_readiness_score=capture_readiness_score,
+        shade_family_stability_score=rank_score,
+        exact_product_stability_score=exact_rank_score,
     )

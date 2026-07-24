@@ -76,7 +76,8 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Image Capture Quality" in page_text
     assert "Label:" in page_text
     assert "Blur metric" in page_text
-    assert "Recommendation Readiness" in page_text
+    assert "Capture & Extraction Readiness" in page_text
+    assert "Exact-product stability" in page_text
     assert "Bootstrap uncertainty radius" in page_text
     assert "Consensus method:" in page_text
     assert "Perceptual outlier threshold:" in page_text
@@ -90,8 +91,8 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Product type:" in page_text
     assert "catalog evidence" in page_text
     assert "Distribution-aware ranking Delta E:" in page_text
-    assert "Bootstrap stability:" in page_text
-    assert "Lighting sensitivity:" in page_text
+    assert "Exact-product bootstrap stability:" in page_text
+    assert "Exact-product lighting stability:" in page_text
 
 
 def test_capture_guidance_text_exists():

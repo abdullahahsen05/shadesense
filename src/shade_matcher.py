@@ -78,6 +78,7 @@ DISPLAY_MIN_DELTA_E_STEPS = (1.8, 1.2, 0.6, 0.0)
 MIN_DEDUP_SCAN_ROWS = 300
 DEDUP_SCAN_MULTIPLIER = 100
 CATALOG_QUALITY_CLOSE_PENALTY = 0.20
+CONCEALER_HYBRID_CLOSE_PENALTY = 0.75
 UNCERTAINTY_LIGHT_MARGIN = 2.0
 STABILITY_SHORTLIST_SIZE = 100
 SHADE_FAMILY_DELTA_E = 2.0
@@ -489,9 +490,9 @@ def match_shades(
     uncertainty_array = _coerce_lab_samples(uncertainty_labs)
     if uncertainty_array is not None:
         supported_upper_l = float(np.percentile(uncertainty_array[:, 0], 95))
-    if "depth" in catalog_df.columns:
-        for idx, row in catalog_df.iterrows():
-            if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
+    for idx, row in catalog_df.iterrows():
+        if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
+            if "depth" in catalog_df.columns:
                 metadata_penalties[idx] += DEPTH_TIE_PENALTY * _depth_distance(
                     estimated_depth, row.get("depth")
                 )
@@ -500,10 +501,12 @@ def match_shades(
                     float(row.get("lab_l")),
                     supported_upper_l=supported_upper_l,
                 )
-                quality = float(row.get("catalog_quality_score", 0.5))
-                metadata_penalties[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
-                    1.0 - float(np.clip(quality, 0.0, 1.0))
-                )
+            quality = float(row.get("catalog_quality_score", 0.5))
+            metadata_penalties[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
+                1.0 - float(np.clip(quality, 0.0, 1.0))
+            )
+            if str(row.get("product_type") or "") == "concealer_hybrid":
+                metadata_penalties[idx] += CONCEALER_HYBRID_CLOSE_PENALTY
     ranking_scores += metadata_penalties
 
     order = np.lexsort((distances, ranking_scores))

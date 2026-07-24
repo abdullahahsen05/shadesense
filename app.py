@@ -350,12 +350,33 @@ if uploaded_file is not None:
             for reason in extraction_quality_report["reasons"][1:]:
                 st.caption(reason)
 
-        st.subheader("Recommendation Readiness")
+        st.subheader("Capture & Extraction Readiness")
         st.markdown(
             f"**{recommendation_readiness.state.title()} · "
             f"{recommendation_readiness.score:.0f}/100**"
         )
         st.caption(recommendation_readiness.summary)
+        readiness_cols = st.columns(3)
+        with readiness_cols[0]:
+            st.metric(
+                "Capture readiness",
+                f"{recommendation_readiness.capture_readiness_score:.0f}/100",
+            )
+        with readiness_cols[1]:
+            st.metric(
+                "Shade-family stability",
+                f"{recommendation_readiness.shade_family_stability_score:.0f}/100",
+            )
+        with readiness_cols[2]:
+            st.metric(
+                "Exact-product stability",
+                f"{recommendation_readiness.exact_product_stability_score:.0f}/100",
+            )
+        st.caption(
+            "Capture readiness describes the photo and extraction. Shade-family "
+            "stability describes color-family repeatability. Exact-product "
+            "stability describes whether the same catalog SKU remains ranked first."
+        )
         for reason in recommendation_readiness.reasons:
             st.caption(reason)
         for warning in recommendation_readiness.warnings:
@@ -658,13 +679,13 @@ if uploaded_file is not None:
                                 )
                             if match.recommendation_stability is not None:
                                 st.caption(
-                                    f"Bootstrap stability: Top 1 {match.recommendation_stability:.0%} · "
+                                    f"Exact-product bootstrap stability: Top 1 {match.recommendation_stability:.0%} · "
                                     f"Top 3 {match.top3_stability:.0%} · "
                                     f"90th-percentile Delta E {match.delta_e_p90:.1f}"
                                 )
                             if match.lighting_recommendation_stability is not None:
                                 st.caption(
-                                    "Lighting sensitivity: "
+                                    "Exact-product lighting stability: "
                                     f"Top 1 {match.lighting_recommendation_stability:.0%} · "
                                     f"Top 3 {match.lighting_top3_stability:.0%} · "
                                     f"90th-percentile Delta E {match.lighting_delta_e_p90:.1f}"

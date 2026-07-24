@@ -202,3 +202,34 @@ def test_unstable_shade_family_prevents_ready_state_after_matching():
         "Shade-family ranking stability" in reason
         for reason in readiness.reasons
     )
+
+
+def test_exact_product_instability_is_reported_separately_from_ready_family():
+    family_stable = ShadeMatch(
+        shade_id="S1",
+        brand="Brand",
+        shade_name="Shade",
+        hex="#806050",
+        rgb=(128, 96, 80),
+        lab=(45.0, 8.0, 14.0),
+        delta_e=0.1,
+        recommendation_stability=0.15,
+        top3_stability=0.30,
+        lighting_recommendation_stability=0.10,
+        lighting_top3_stability=0.25,
+        recommendation_family_stability=0.95,
+        top3_family_stability=1.0,
+        lighting_family_stability=0.90,
+        lighting_top3_family_stability=0.95,
+    )
+
+    readiness = build_recommendation_readiness(
+        _skin(3.0, 92.0, sensitivity_score=90.0, sensitivity_radius=2.0),
+        {"overall_score": 85.0},
+        _lighting(0.90),
+        matches=[family_stable],
+    )
+
+    assert readiness.state == "ready"
+    assert readiness.shade_family_stability_score > 90.0
+    assert readiness.exact_product_stability_score < 30.0

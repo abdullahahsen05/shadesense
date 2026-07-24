@@ -468,6 +468,55 @@ def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
     assert _too_light_penalty(50.0, 57.0, supported_upper_l=55.0) == 0.0
 
 
+def test_near_tied_foundation_is_preferred_over_concealer_hybrid():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["concealer", "foundation", "far"],
+            "brand": ["A", "B", "C"],
+            "product": ["Foundation Concealer", "Liquid Foundation", "Foundation"],
+            "shade_name": ["Exact Concealer", "Near Foundation", "Far Foundation"],
+            "hex": ["#806050", "#816151", "#A08070"],
+            "r": [128, 129, 160],
+            "g": [96, 97, 128],
+            "b": [80, 81, 112],
+            "lab_l": [50.0, 50.5, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+            "product_type": ["concealer_hybrid", "foundation", "foundation"],
+            "catalog_quality_score": [1.0, 1.0, 1.0],
+        }
+    )
+
+    matches = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=1)
+
+    assert matches[0].shade_id == "foundation"
+    assert matches[0].delta_e > 0.0
+
+
+def test_clearly_better_concealer_color_is_not_overridden():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["concealer", "foundation"],
+            "brand": ["A", "B"],
+            "product": ["Foundation Concealer", "Liquid Foundation"],
+            "shade_name": ["Exact Concealer", "Far Foundation"],
+            "hex": ["#806050", "#A08070"],
+            "r": [128, 160],
+            "g": [96, 128],
+            "b": [80, 112],
+            "lab_l": [50.0, 57.0],
+            "lab_a": [8.0, 8.0],
+            "lab_b": [14.0, 14.0],
+            "product_type": ["concealer_hybrid", "foundation"],
+            "catalog_quality_score": [1.0, 1.0],
+        }
+    )
+
+    matches = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=2)
+
+    assert matches[0].shade_id == "concealer"
+
+
 def test_nearby_products_can_have_stable_family_but_unstable_exact_sku():
     df = pd.DataFrame(
         {
