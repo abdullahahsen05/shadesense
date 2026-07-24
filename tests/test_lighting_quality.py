@@ -80,3 +80,52 @@ def test_face_region_lighting_reports_asymmetric_cheeks():
     assert quality.uneven_lighting
     assert quality.left_right_gap > 24
     assert set(quality.region_metrics) == {"left_cheek", "right_cheek"}
+
+
+def test_shadowed_cheek_is_low_signal_without_treating_even_deep_skin_as_bad():
+    dark_even = np.full((100, 140, 3), 55, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+
+    even = analyze_lighting_quality(
+        dark_even,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+    assert not even.low_signal
+
+    split = dark_even.copy()
+    split[left > 0] = 50
+    split[right > 0] = 145
+    uneven = analyze_lighting_quality(
+        split,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+    assert uneven.low_signal
+    assert uneven.recapture_recommended
+    assert uneven.score < even.score
+
+
+def test_continuous_lighting_subscores_distinguish_severity():
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+    mild = np.full((100, 140, 3), 125, dtype=np.uint8)
+    severe = mild.copy()
+    mild[left > 0] = 105
+    mild[right > 0] = 145
+    severe[left > 0] = 55
+    severe[right > 0] = 200
+
+    mild_result = analyze_lighting_quality(
+        mild, masks={"left_cheek": left, "right_cheek": right}
+    )
+    severe_result = analyze_lighting_quality(
+        severe, masks={"left_cheek": left, "right_cheek": right}
+    )
+
+    assert severe_result.uniformity_score < mild_result.uniformity_score
+    assert severe_result.score < mild_result.score
+    assert "Subscores" in severe_result.explanation

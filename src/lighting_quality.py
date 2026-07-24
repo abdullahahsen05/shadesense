@@ -23,6 +23,15 @@ class LightingQuality:
     face_luminance_spread: float = 0.0
     left_right_gap: float = 0.0
     central_lower_gap: float = 0.0
+    face_median_luma: float = 0.0
+    worst_region_shadow_ratio: float = 0.0
+    low_signal: bool = False
+    recapture_recommended: bool = False
+    exposure_score: float = 1.0
+    uniformity_score: float = 1.0
+    contrast_score: float = 1.0
+    highlight_score: float = 1.0
+    color_score: float = 1.0
     region_metrics: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
@@ -96,8 +105,8 @@ def analyze_lighting_quality(
         sample_image = image.reshape(-1, 3)
 
     mean_luma = float(np.mean(sample_gray))
-    p05, p25, p75, p90, p95, p99 = [
-        float(v) for v in np.percentile(sample_gray, [5, 25, 75, 90, 95, 99])
+    p05, p25, p50, p75, p90, p95, p99 = [
+        float(v) for v in np.percentile(sample_gray, [5, 25, 50, 75, 90, 95, 99])
     ]
     shadow_contrast = p95 - p05
     highlight_ratio = float(np.mean(sample_gray > 225))
@@ -133,8 +142,12 @@ def analyze_lighting_quality(
     cast_strength = float(np.max(np.abs(channel_means - channel_avg))) if channel_avg else 0.0
 
     warnings = []
-    score = 1.0
-    underexposed = mean_luma < 70 or p75 < 85
+    if using_face_regions:
+        # Absolute face luminance is not a safe proxy for exposure across skin
+        # tones. Require substantial near-black clipping when face masks exist.
+        underexposed = shadow_ratio > 0.18 and p95 < 120
+    else:
+        underexposed = mean_luma < 70 or p75 < 85
     overexposed = mean_luma > 205 or p25 > 185
     uneven_lighting = uneven_gap > (24 if using_face_regions else 36)
     strong_shadow_contrast = shadow_contrast > 185
@@ -143,31 +156,100 @@ def analyze_lighting_quality(
     )
     color_cast = cast_strength > 22
 
+    region_shadow_ratios = [
+        float(metric.get("shadow_ratio", 0.0))
+        for metric in region_metrics.values()
+    ]
+    worst_region_shadow_ratio = max(region_shadow_ratios, default=shadow_ratio)
+    cheek_medians = [
+        float(region_metrics[name]["median_luma"])
+        for name in ("left_cheek", "right_cheek")
+        if name in region_metrics
+    ]
+    shadowed_cheek = (
+        len(cheek_medians) == 2
+        and min(cheek_medians) < 100
+        and abs(cheek_medians[0] - cheek_medians[1]) > 45
+    )
+    # Do not call evenly illuminated deep skin "underexposed" based on its
+    # absolute luminance alone. Low signal requires clipping or a strongly
+    # shadowed region relative to the other side of the same face.
+    low_signal = bool(
+        underexposed
+        or worst_region_shadow_ratio > 0.12
+        or shadowed_cheek
+    )
+
+    exposure_score = 1.0
+    if underexposed or overexposed:
+        exposure_score -= 0.50
+    if low_signal and not underexposed:
+        exposure_score -= 0.45
+    exposure_score -= min(shadow_ratio * 1.5, 0.25)
+    exposure_score -= min(highlight_ratio * 2.0, 0.20)
+    exposure_score = float(np.clip(exposure_score, 0.0, 1.0))
+
+    uniformity_floor = 10.0 if using_face_regions else 18.0
+    uniformity_span = 90.0 if using_face_regions else 120.0
+    uniformity_score = float(
+        np.clip(1.0 - max(uneven_gap - uniformity_floor, 0.0) / uniformity_span, 0.0, 1.0)
+    )
+    contrast_score = float(
+        np.clip(1.0 - max(shadow_contrast - 90.0, 0.0) / 120.0, 0.0, 1.0)
+    )
+    highlight_score = float(
+        np.clip(
+            1.0
+            - min(highlight_ratio / 0.08, 0.55)
+            - min(broad_highlight_ratio / 0.25, 0.35),
+            0.0,
+            1.0,
+        )
+    )
+    color_score = float(
+        np.clip(1.0 - max(cast_strength - 12.0, 0.0) / 32.0, 0.0, 1.0)
+    )
+    score = float(
+        np.clip(
+            0.25 * exposure_score
+            + 0.30 * uniformity_score
+            + 0.15 * contrast_score
+            + 0.15 * highlight_score
+            + 0.15 * color_score,
+            0.20,
+            1.0,
+        )
+    )
+
     if underexposed:
-        score -= 0.20
         warnings.append("Image appears underexposed; shadowed skin pixels may be less reliable.")
+    elif low_signal:
+        warnings.append(
+            "One or more facial regions have low color signal from shadow; "
+            "a brighter, more even recapture is recommended."
+        )
     if overexposed:
-        score -= 0.20
         warnings.append("Image appears overexposed; highlight or glare may shift the extracted tone.")
     if uneven_lighting:
-        score -= 0.18
         warnings.append("Lighting appears uneven across the face/image.")
     if strong_shadow_contrast:
-        score -= 0.14
         warnings.append("Strong shadow/highlight contrast detected.")
     if strong_highlights:
-        score -= 0.16
         warnings.append("Strong facial highlights or glossy shine detected; extracted depth may skew too light.")
     if color_cast:
-        score -= 0.12
         warnings.append("Possible color cast detected; white balance may affect shade matching.")
 
-    score = float(np.clip(score, 0.25, 1.0))
+    recapture_recommended = bool(
+        underexposed or overexposed or low_signal or score < 0.55
+    )
     scope = "facial skin regions" if using_face_regions else "full image"
     explanation = (
-        f"Measured on {scope}: mean luminance {mean_luma:.0f}/255, shadow range {shadow_contrast:.0f}, "
+        f"Measured on {scope}: median luminance {p50:.0f}/255, shadow range {shadow_contrast:.0f}, "
         f"uneven-lighting gap {uneven_gap:.0f}, highlight ratio {highlight_ratio:.1%}, "
-        f"color-cast strength {cast_strength:.0f}."
+        f"color-cast strength {cast_strength:.0f}. "
+        f"Subscores — exposure {exposure_score:.0%}, uniformity {uniformity_score:.0%}, "
+        f"contrast {contrast_score:.0%}, highlights {highlight_score:.0%}, "
+        f"color {color_score:.0%}."
     )
     if not warnings:
         explanation += " Lighting looks suitable for extraction."
@@ -188,5 +270,14 @@ def analyze_lighting_quality(
         face_luminance_spread=shadow_contrast,
         left_right_gap=float(left_right_gap),
         central_lower_gap=float(central_lower_gap),
+        face_median_luma=p50,
+        worst_region_shadow_ratio=float(worst_region_shadow_ratio),
+        low_signal=low_signal,
+        recapture_recommended=recapture_recommended,
+        exposure_score=exposure_score,
+        uniformity_score=uniformity_score,
+        contrast_score=contrast_score,
+        highlight_score=highlight_score,
+        color_score=color_score,
         region_metrics=region_metrics,
     )
