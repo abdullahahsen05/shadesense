@@ -7,6 +7,7 @@ import numpy as np
 import streamlit as st
 from src.color_correction import apply_mild_color_correction, correction_settings_for_lighting
 from src.confidence import build_quality_report, compute_confidence
+from src.capture_uncertainty import analyze_capture_uncertainty
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.extraction_quality import build_extraction_quality_report
@@ -203,6 +204,15 @@ if uploaded_file is not None:
             lighting_sensitivity.as_diagnostics()
         )
         skin_result.warnings.extend(lighting_sensitivity.warnings)
+        capture_uncertainty = analyze_capture_uncertainty(
+            skin_result,
+            lighting_quality=lighting_quality,
+            image_quality=image_quality,
+        )
+        skin_result.systematic_uncertainty_diagnostics = (
+            capture_uncertainty.as_diagnostics()
+        )
+        skin_result.warnings.extend(capture_uncertainty.warnings)
         extraction_quality_report = build_extraction_quality_report(
             skin_result,
             image_quality=image_quality,
@@ -444,6 +454,19 @@ if uploaded_file is not None:
                 "Usable perturbations: "
                 f"{sensitivity_diag.get('successful_variants', 0)}/"
                 f"{sensitivity_diag.get('attempted_variants', 0)}"
+            )
+            systematic_diag = skin_result.systematic_uncertainty_diagnostics or {}
+            st.markdown("**Systematic Capture Uncertainty**")
+            st.caption(
+                "Capture-only radius: "
+                f"{systematic_diag.get('systematic_radius', 0.0):.1f} Delta E"
+            )
+            st.caption(
+                "Combined patch + capture radius: "
+                f"{systematic_diag.get('total_delta_e_radius_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                f"Capture stability: {systematic_diag.get('score', 0.0):.0f}/100"
             )
             if patch_diag.get("fallback_reason"):
                 st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")

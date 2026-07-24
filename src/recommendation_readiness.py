@@ -23,7 +23,13 @@ def build_recommendation_readiness(
     extraction_score = float(extraction_quality_report.get("overall_score", 0.0))
     lighting_score = float(getattr(lighting_quality, "score", 1.0))
     uncertainty = getattr(skin_result, "uncertainty_diagnostics", {}) or {}
-    radius = float(uncertainty.get("delta_e_radius_p90", 12.0))
+    capture_uncertainty = (
+        getattr(skin_result, "systematic_uncertainty_diagnostics", {}) or {}
+    )
+    local_radius = float(uncertainty.get("delta_e_radius_p90", 12.0))
+    radius = float(
+        capture_uncertainty.get("total_delta_e_radius_p90", local_radius)
+    )
     stability = float(uncertainty.get("stability_score", 45.0))
     sensitivity = (
         getattr(skin_result, "lighting_sensitivity_diagnostics", {}) or {}
@@ -45,7 +51,8 @@ def build_recommendation_readiness(
     reasons = [
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
-        f"Bootstrap uncertainty radius {radius:.1f} Delta E (90th percentile).",
+        f"Local patch uncertainty radius {local_radius:.1f} Delta E.",
+        f"Total capture uncertainty radius {radius:.1f} Delta E.",
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
 
