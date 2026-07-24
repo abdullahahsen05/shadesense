@@ -19,6 +19,7 @@ def build_recommendation_readiness(
     skin_result,
     extraction_quality_report: dict,
     lighting_quality=None,
+    matches: list | None = None,
 ) -> RecommendationReadiness:
     extraction_score = float(extraction_quality_report.get("overall_score", 0.0))
     lighting_score = float(getattr(lighting_quality, "score", 1.0))
@@ -37,13 +38,45 @@ def build_recommendation_readiness(
     sensitivity_score = float(sensitivity.get("score", 100.0))
     sensitivity_radius = float(sensitivity.get("delta_e_p90", 0.0))
     success = bool(getattr(skin_result, "success", False))
+    rank_score = 100.0
+    bootstrap_family_top3 = 1.0
+    lighting_family_top3 = 1.0
+    if matches:
+        best = matches[0]
+        bootstrap_family_top3 = float(
+            getattr(best, "top3_family_stability", None)
+            if getattr(best, "top3_family_stability", None) is not None
+            else getattr(best, "top3_stability", 1.0) or 0.0
+        )
+        lighting_family_top3 = float(
+            getattr(best, "lighting_top3_family_stability", None)
+            if getattr(best, "lighting_top3_family_stability", None) is not None
+            else getattr(best, "lighting_top3_stability", 1.0) or 0.0
+        )
+        bootstrap_family_top1 = float(
+            getattr(best, "recommendation_family_stability", None)
+            if getattr(best, "recommendation_family_stability", None) is not None
+            else getattr(best, "recommendation_stability", 1.0) or 0.0
+        )
+        lighting_family_top1 = float(
+            getattr(best, "lighting_family_stability", None)
+            if getattr(best, "lighting_family_stability", None) is not None
+            else getattr(best, "lighting_recommendation_stability", 1.0) or 0.0
+        )
+        rank_score = 100.0 * (
+            0.20 * bootstrap_family_top1
+            + 0.30 * bootstrap_family_top3
+            + 0.20 * lighting_family_top1
+            + 0.30 * lighting_family_top3
+        )
 
     combined = float(
         np.clip(
             0.50 * extraction_score
             + 0.15 * (lighting_score * 100.0)
             + 0.20 * stability
-            + 0.15 * sensitivity_score,
+            + 0.10 * sensitivity_score
+            + 0.05 * rank_score,
             0.0,
             100.0,
         )
@@ -51,8 +84,9 @@ def build_recommendation_readiness(
     reasons = [
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
-        f"Local patch uncertainty radius {local_radius:.1f} Delta E.",
+        f"Bootstrap uncertainty radius {local_radius:.1f} Delta E (local patches).",
         f"Total capture uncertainty radius {radius:.1f} Delta E.",
+        f"Shade-family ranking stability {rank_score:.0f}/100.",
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
 
@@ -63,6 +97,8 @@ def build_recommendation_readiness(
         and radius <= 6.0
         and sensitivity_score >= 70.0
         and sensitivity_radius <= 3.0
+        and bootstrap_family_top3 >= 0.70
+        and lighting_family_top3 >= 0.60
     ):
         return RecommendationReadiness(
             state="ready",
@@ -76,6 +112,8 @@ def build_recommendation_readiness(
         and extraction_score >= 50.0
         and radius <= 10.0
         and sensitivity_radius <= 6.0
+        and bootstrap_family_top3 >= 0.35
+        and lighting_family_top3 >= 0.30
     ):
         return RecommendationReadiness(
             state="caution",

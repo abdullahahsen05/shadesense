@@ -110,3 +110,36 @@ def test_provisional_state_caps_match_confidence_but_keeps_match():
     assert len(matches) == 1
     assert matches[0].confidence == 0.55
     assert matches[0].confidence_breakdown["readiness_cap"] == 0.55
+
+
+def test_unstable_shade_family_prevents_ready_state_after_matching():
+    unstable = ShadeMatch(
+        shade_id="S1",
+        brand="Brand",
+        shade_name="Shade",
+        hex="#806050",
+        rgb=(128, 96, 80),
+        lab=(45.0, 8.0, 14.0),
+        delta_e=0.1,
+        recommendation_stability=0.2,
+        top3_stability=0.3,
+        lighting_recommendation_stability=0.1,
+        lighting_top3_stability=0.2,
+        recommendation_family_stability=0.3,
+        top3_family_stability=0.4,
+        lighting_family_stability=0.2,
+        lighting_top3_family_stability=0.25,
+    )
+
+    readiness = build_recommendation_readiness(
+        _skin(3.0, 92.0, sensitivity_score=90.0, sensitivity_radius=2.0),
+        {"overall_score": 85.0},
+        _lighting(0.90),
+        matches=[unstable],
+    )
+
+    assert readiness.state == "provisional"
+    assert any(
+        "Shade-family ranking stability" in reason
+        for reason in readiness.reasons
+    )

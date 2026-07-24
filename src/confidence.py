@@ -185,6 +185,15 @@ def compute_confidence(
             recommendation_stability = float(
                 np.clip(0.4 * top1_stability + 0.6 * top3_stability, 0.0, 1.0)
             )
+        family_top1 = getattr(match, "recommendation_family_stability", None)
+        family_top3 = getattr(match, "top3_family_stability", None)
+        if family_top1 is not None and family_top3 is not None:
+            family_stability = float(
+                np.clip(0.4 * family_top1 + 0.6 * family_top3, 0.0, 1.0)
+            )
+            recommendation_stability = (
+                0.35 * recommendation_stability + 0.65 * family_stability
+            )
         lighting_top1 = getattr(match, "lighting_recommendation_stability", None)
         lighting_top3 = getattr(match, "lighting_top3_stability", None)
         if lighting_top1 is not None and lighting_top3 is not None:
@@ -193,6 +202,26 @@ def compute_confidence(
             )
             recommendation_stability = (
                 0.7 * recommendation_stability + 0.3 * lighting_rank_stability
+            )
+        lighting_family_top1 = getattr(match, "lighting_family_stability", None)
+        lighting_family_top3 = getattr(
+            match, "lighting_top3_family_stability", None
+        )
+        if (
+            lighting_family_top1 is not None
+            and lighting_family_top3 is not None
+        ):
+            lighting_family_stability = float(
+                np.clip(
+                    0.4 * lighting_family_top1
+                    + 0.6 * lighting_family_top3,
+                    0.0,
+                    1.0,
+                )
+            )
+            recommendation_stability = (
+                0.75 * recommendation_stability
+                + 0.25 * lighting_family_stability
             )
         catalog_quality = float(
             np.clip(getattr(match, "catalog_quality_score", 0.5), 0.0, 1.0)

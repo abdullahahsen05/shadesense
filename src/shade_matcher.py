@@ -52,6 +52,10 @@ class ShadeMatch:
     lighting_recommendation_stability: float | None = None
     lighting_top3_stability: float | None = None
     lighting_delta_e_p90: float | None = None
+    recommendation_family_stability: float | None = None
+    top3_family_stability: float | None = None
+    lighting_family_stability: float | None = None
+    lighting_top3_family_stability: float | None = None
     delta_e_median: float | None = None
     delta_e_p90: float | None = None
     distribution_delta_e: float | None = None
@@ -76,6 +80,7 @@ DEDUP_SCAN_MULTIPLIER = 100
 CATALOG_QUALITY_CLOSE_PENALTY = 0.20
 UNCERTAINTY_LIGHT_MARGIN = 2.0
 STABILITY_SHORTLIST_SIZE = 100
+SHADE_FAMILY_DELTA_E = 2.0
 POINT_DISTANCE_WEIGHT = 0.45
 UNCERTAINTY_MEDIAN_WEIGHT = 0.40
 UNCERTAINTY_TAIL_WEIGHT = 0.15
@@ -364,6 +369,22 @@ def _apply_uncertainty_stability(
     for idx, candidate in enumerate(shortlist):
         candidate.recommendation_stability = float(np.mean(order[:, 0] == idx))
         candidate.top3_stability = float(np.mean(np.any(order[:, : min(3, len(shortlist))] == idx, axis=1)))
+        winning_labs = labs[order[:, 0]]
+        candidate_grid = np.repeat(labs[idx][None, :], len(samples), axis=0)
+        family_delta = deltaE_ciede2000(candidate_grid, winning_labs)
+        candidate.recommendation_family_stability = float(
+            np.mean(family_delta <= SHADE_FAMILY_DELTA_E)
+        )
+        top_count = min(3, len(shortlist))
+        family_top3 = []
+        for sample_index in range(len(samples)):
+            top_labs = labs[order[sample_index, :top_count]]
+            repeated = np.repeat(labs[idx][None, :], top_count, axis=0)
+            family_top3.append(
+                np.min(deltaE_ciede2000(repeated, top_labs))
+                <= SHADE_FAMILY_DELTA_E
+            )
+        candidate.top3_family_stability = float(np.mean(family_top3))
         candidate.delta_e_median = float(np.median(distances[:, idx]))
         candidate.delta_e_p90 = float(np.percentile(distances[:, idx], 90))
 
@@ -389,6 +410,21 @@ def _apply_lighting_stability(
         candidate.lighting_top3_stability = float(
             np.mean(np.any(order[:, :top_count] == idx, axis=1))
         )
+        winning_labs = labs[order[:, 0]]
+        candidate_grid = np.repeat(labs[idx][None, :], len(samples), axis=0)
+        family_delta = deltaE_ciede2000(candidate_grid, winning_labs)
+        candidate.lighting_family_stability = float(
+            np.mean(family_delta <= SHADE_FAMILY_DELTA_E)
+        )
+        family_top3 = []
+        for sample_index in range(len(samples)):
+            top_labs = labs[order[sample_index, :top_count]]
+            repeated = np.repeat(labs[idx][None, :], top_count, axis=0)
+            family_top3.append(
+                np.min(deltaE_ciede2000(repeated, top_labs))
+                <= SHADE_FAMILY_DELTA_E
+            )
+        candidate.lighting_top3_family_stability = float(np.mean(family_top3))
         candidate.lighting_delta_e_p90 = float(
             np.percentile(distances[:, idx], 90)
         )

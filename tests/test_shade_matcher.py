@@ -466,3 +466,39 @@ def test_lighting_sensitivity_samples_influence_ranking_and_stability():
 def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
     assert _too_light_penalty(50.0, 57.0) > 0.0
     assert _too_light_penalty(50.0, 57.0, supported_upper_l=55.0) == 0.0
+
+
+def test_nearby_products_can_have_stable_family_but_unstable_exact_sku():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["near-a", "near-b", "far"],
+            "brand": ["A", "B", "C"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Near A", "Near B", "Far"],
+            "hex": ["#806050", "#816151", "#A08070"],
+            "r": [128, 129, 160],
+            "g": [96, 97, 128],
+            "b": [80, 81, 112],
+            "lab_l": [50.0, 50.8, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    samples = np.array(
+        [[50.0, 8.0, 14.0], [50.9, 8.0, 14.0]] * 8,
+        dtype=float,
+    )
+
+    matches = match_shades(
+        np.array([50.4, 8.0, 14.0]),
+        df,
+        top_k=3,
+        uncertainty_labs=samples,
+        lighting_sensitivity_labs=samples,
+    )
+    best = matches[0]
+
+    assert best.recommendation_stability < 1.0
+    assert best.recommendation_family_stability == 1.0
+    assert best.top3_family_stability == 1.0
+    assert best.lighting_family_stability == 1.0

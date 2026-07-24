@@ -220,10 +220,23 @@ if uploaded_file is not None:
             extraction_selection=extraction_selection,
             face_result=face_result,
         )
+        readiness_matching_lab = (
+            skin_result.foundation_target_lab
+            if skin_result.foundation_target_active
+            else skin_result.lab
+        )
+        readiness_matches = match_shades(
+            np.array(readiness_matching_lab),
+            catalog_df,
+            top_k=TOP_K_SHADES,
+            uncertainty_labs=skin_result.bootstrap_labs,
+            lighting_sensitivity_labs=skin_result.lighting_sensitivity_labs,
+        )
         recommendation_readiness = build_recommendation_readiness(
             skin_result,
             extraction_quality_report,
             lighting_quality,
+            matches=readiness_matches,
         )
         visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
         visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
@@ -651,6 +664,19 @@ if uploaded_file is not None:
                                     f"Top 1 {match.lighting_recommendation_stability:.0%} · "
                                     f"Top 3 {match.lighting_top3_stability:.0%} · "
                                     f"90th-percentile Delta E {match.lighting_delta_e_p90:.1f}"
+                                )
+                            if (
+                                match.recommendation_family_stability is not None
+                                and match.top3_family_stability is not None
+                                and match.lighting_family_stability is not None
+                                and match.lighting_top3_family_stability is not None
+                            ):
+                                st.caption(
+                                    "Shade-family stability: "
+                                    f"bootstrap Top 1 {match.recommendation_family_stability:.0%} · "
+                                    f"Top 3 {match.top3_family_stability:.0%}; "
+                                    f"lighting Top 1 {match.lighting_family_stability:.0%} · "
+                                    f"Top 3 {match.lighting_top3_family_stability:.0%}."
                                 )
                             if match.undertone or match.depth:
                                 st.caption(
