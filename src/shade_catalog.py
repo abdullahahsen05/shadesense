@@ -66,6 +66,47 @@ def _valid_rgb_component(value) -> bool:
     return 0 <= v <= 255 and not np.isnan(v)
 
 
+def classify_product_type(product) -> str:
+    text = "" if product is None or pd.isna(product) else str(product).casefold()
+    if "bb " in f"{text} " or "cc " in f"{text} " or "bb cream" in text or "cc cream" in text:
+        return "bb_cc"
+    if "tinted moisturizer" in text or "tinted moisturiser" in text:
+        return "tinted_moisturizer"
+    if "skin tint" in text or ("tint" in text and "foundation" not in text):
+        return "tint"
+    if "powder" in text:
+        return "powder"
+    if "cushion" in text:
+        return "cushion"
+    if "stick" in text:
+        return "stick"
+    if "concealer" in text:
+        return "concealer_hybrid"
+    if any(term in text for term in ("foundation", "base", "complexion", "teint")):
+        return "foundation"
+    return "other_base"
+
+
+def catalog_quality_score(row: pd.Series) -> float:
+    """Score metadata completeness without altering the catalog color."""
+    score = 0.50
+    product = row.get("product")
+    if product is not None and not pd.isna(product) and str(product).strip().casefold() not in {"", "unknown"}:
+        score += 0.15
+    source_url = row.get("source_url")
+    if source_url is not None and not pd.isna(source_url) and str(source_url).strip():
+        score += 0.10
+    undertone = row.get("undertone")
+    if undertone is not None and not pd.isna(undertone) and str(undertone).strip().casefold() not in {"", "unknown"}:
+        score += 0.10
+    depth = row.get("depth")
+    if depth is not None and not pd.isna(depth) and str(depth).strip().casefold() not in {"", "unknown"}:
+        score += 0.10
+    if classify_product_type(product) != "other_base":
+        score += 0.05
+    return float(np.clip(score, 0.0, 1.0))
+
+
 def catalog_definitions(
     public_path: str | Path = PUBLIC_SHADE_CATALOG_PATH,
     mock_path: str | Path = MOCK_SHADE_CATALOG_PATH,
@@ -189,6 +230,8 @@ def load_shade_catalog(
     catalog_df["lab_l"] = lab_array[:, 0]
     catalog_df["lab_a"] = lab_array[:, 1]
     catalog_df["lab_b"] = lab_array[:, 2]
+    catalog_df["product_type"] = catalog_df["product"].map(classify_product_type)
+    catalog_df["catalog_quality_score"] = catalog_df.apply(catalog_quality_score, axis=1)
 
     _catalog_attrs(
         catalog_df=catalog_df,

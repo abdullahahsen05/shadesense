@@ -5,7 +5,7 @@ from skimage.color import deltaE_ciede2000
 
 from src.config import SHADE_CATALOG_PATH
 from src.shade_catalog import CatalogValidationError, load_shade_catalog
-from src.shade_matcher import estimate_depth_from_lab_l, match_shades
+from src.shade_matcher import _too_light_penalty, estimate_depth_from_lab_l, match_shades
 
 
 def test_deltaE_ciede2000_identical_colors_is_zero():
@@ -333,3 +333,44 @@ def test_top_three_returns_distinct_candidates_when_enough_unique_shades_exist()
     matches = match_shades(np.array([50.0, 8.0, 16.0]), df, top_k=3)
     assert len(matches) == 3
     assert len({(m.brand, m.shade_name) for m in matches}) == 3
+
+
+def test_uncertainty_samples_add_recommendation_stability():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A", "B", "C", "D"],
+            "brand": ["A", "B", "C", "D"],
+            "product": ["Foundation"] * 4,
+            "shade_name": ["A", "B", "C", "D"],
+            "hex": ["#806050", "#876657", "#927060", "#A08070"],
+            "r": [128, 135, 146, 160],
+            "g": [96, 102, 112, 128],
+            "b": [80, 87, 96, 112],
+            "lab_l": [45.0, 48.0, 52.0, 58.0],
+            "lab_a": [8.0, 8.5, 9.0, 10.0],
+            "lab_b": [14.0, 14.5, 15.0, 16.0],
+            "depth": ["tan", "tan", "medium", "medium"],
+            "product_type": ["foundation"] * 4,
+            "catalog_quality_score": [1.0] * 4,
+        }
+    )
+    samples = np.array(
+        [[45.0 + offset, 8.0, 14.0] for offset in np.linspace(-0.5, 0.5, 21)]
+    )
+
+    matches = match_shades(
+        np.array([45.0, 8.0, 14.0]),
+        df,
+        top_k=3,
+        uncertainty_labs=samples,
+    )
+
+    assert matches[0].recommendation_stability is not None
+    assert matches[0].recommendation_stability > 0.8
+    assert matches[0].top3_stability == 1.0
+    assert matches[0].delta_e_p90 is not None
+
+
+def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
+    assert _too_light_penalty(50.0, 57.0) > 0.0
+    assert _too_light_penalty(50.0, 57.0, supported_upper_l=55.0) == 0.0

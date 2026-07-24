@@ -45,6 +45,11 @@ class ShadeMatch:
     extracted_depth: str | None = None
     depth_match_status: str = "unknown"
     depth_sanity_note: str | None = None
+    product_type: str = "other_base"
+    catalog_quality_score: float = 0.5
+    recommendation_stability: float | None = None
+    top3_stability: float | None = None
+    delta_e_p90: float | None = None
 
 
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
@@ -58,6 +63,9 @@ NEAR_DUPLICATE_DELTA_E = 1.2
 DISPLAY_MIN_DELTA_E_STEPS = (1.8, 1.2, 0.6, 0.0)
 MIN_DEDUP_SCAN_ROWS = 1000
 DEDUP_SCAN_MULTIPLIER = 500
+CATALOG_QUALITY_CLOSE_PENALTY = 0.20
+UNCERTAINTY_LIGHT_MARGIN = 2.0
+STABILITY_SHORTLIST_SIZE = 100
 
 
 def _normalize_key_text(value) -> str:
@@ -96,11 +104,22 @@ def _shade_names_similar(a, b) -> bool:
 def _depth_distance(estimated_depth: str, catalog_depth) -> int:
     if catalog_depth is None or pd.isna(catalog_depth):
         return 0
-    return abs(DEPTH_ORDER.get(str(estimated_depth), 0) - DEPTH_ORDER.get(str(catalog_depth), DEPTH_ORDER.get(str(estimated_depth), 0)))
+    estimated_order = DEPTH_ORDER.get(str(estimated_depth))
+    catalog_order = DEPTH_ORDER.get(str(catalog_depth))
+    if estimated_order is None or catalog_order is None:
+        return 0
+    return abs(estimated_order - catalog_order)
 
 
-def _too_light_penalty(skin_l: float, shade_l: float) -> float:
-    l_gap = float(shade_l - skin_l)
+def _too_light_penalty(
+    skin_l: float,
+    shade_l: float,
+    supported_upper_l: float | None = None,
+) -> float:
+    if supported_upper_l is None:
+        l_gap = float(shade_l - skin_l)
+    else:
+        l_gap = float(shade_l - (supported_upper_l + UNCERTAINTY_LIGHT_MARGIN))
     if l_gap <= TOO_LIGHT_L_THRESHOLD:
         return 0.0
     return float(np.clip((l_gap - TOO_LIGHT_L_THRESHOLD) * TOO_LIGHT_CLOSE_PENALTY, 0.0, TOO_LIGHT_MAX_PENALTY))
@@ -145,6 +164,8 @@ def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, ran
         extracted_depth=extracted_depth,
         depth_match_status=depth_match_status(extracted_depth, shade_depth),
         depth_sanity_note=depth_sanity_note(extracted_depth, shade_depth),
+        product_type=str(row.get("product_type") or "other_base"),
+        catalog_quality_score=float(row.get("catalog_quality_score", 0.5)),
         rank=rank,
     )
 
@@ -255,7 +276,33 @@ def _select_visually_distinct_matches(candidates: list[ShadeMatch], top_k: int) 
     return selected
 
 
-def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
+def _apply_uncertainty_stability(
+    candidates: list[ShadeMatch],
+    uncertainty_labs,
+) -> None:
+    if uncertainty_labs is None or not candidates:
+        return
+    samples = np.asarray(uncertainty_labs, dtype=np.float64)
+    if samples.ndim != 2 or samples.shape[1] != 3 or len(samples) == 0:
+        return
+    shortlist = candidates[:STABILITY_SHORTLIST_SIZE]
+    labs = np.asarray([candidate.lab for candidate in shortlist], dtype=np.float64)
+    sample_grid = np.repeat(samples[:, None, :], len(shortlist), axis=1)
+    catalog_grid = np.repeat(labs[None, :, :], len(samples), axis=0)
+    distances = deltaE_ciede2000(sample_grid, catalog_grid)
+    order = np.argsort(distances, axis=1)
+    for idx, candidate in enumerate(shortlist):
+        candidate.recommendation_stability = float(np.mean(order[:, 0] == idx))
+        candidate.top3_stability = float(np.mean(np.any(order[:, : min(3, len(shortlist))] == idx, axis=1)))
+        candidate.delta_e_p90 = float(np.percentile(distances[:, idx], 90))
+
+
+def match_shades(
+    skin_lab,
+    catalog_df: pd.DataFrame,
+    top_k: int = 3,
+    uncertainty_labs=None,
+) -> list:
     """Rank catalog shades by perceptual distance to the extracted skin color.
 
     Returns up to `top_k` `ShadeMatch` entries sorted by ascending distance
@@ -270,11 +317,24 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
     estimated_depth = estimate_depth_from_lab_l(float(np.asarray(skin_lab, dtype=np.float64)[0]))
     best_delta = float(np.min(distances))
     ranking_scores = distances.copy()
+    supported_upper_l = None
+    if uncertainty_labs is not None:
+        uncertainty_array = np.asarray(uncertainty_labs, dtype=np.float64)
+        if uncertainty_array.ndim == 2 and uncertainty_array.shape[1] == 3 and len(uncertainty_array):
+            supported_upper_l = float(np.percentile(uncertainty_array[:, 0], 95))
     if "depth" in catalog_df.columns:
         for idx, row in catalog_df.iterrows():
             if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
                 ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
-                ranking_scores[idx] += _too_light_penalty(float(np.asarray(skin_lab, dtype=np.float64)[0]), float(row.get("lab_l")))
+                ranking_scores[idx] += _too_light_penalty(
+                    float(np.asarray(skin_lab, dtype=np.float64)[0]),
+                    float(row.get("lab_l")),
+                    supported_upper_l=supported_upper_l,
+                )
+                quality = float(row.get("catalog_quality_score", 0.5))
+                ranking_scores[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
+                    1.0 - float(np.clip(quality, 0.0, 1.0))
+                )
 
     order = np.lexsort((distances, ranking_scores))
 
@@ -286,4 +346,5 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
         ranked_candidates.append(candidate)
 
     grouped_candidates = _group_ranked_candidates(ranked_candidates)
+    _apply_uncertainty_stability(grouped_candidates, uncertainty_labs)
     return _select_visually_distinct_matches(grouped_candidates, top_k)

@@ -92,11 +92,15 @@ def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
         "hex",
         "undertone",
         "depth",
+        "product_type",
+        "catalog_quality_score",
         "source",
         "source_url",
     ]
     assert out.iloc[0]["hex"] == "#F1CAAA"
     assert out.iloc[0]["undertone"] == "warm"
+    assert out.iloc[0]["product_type"] == "foundation"
+    assert 0.0 <= out.iloc[0]["catalog_quality_score"] <= 1.0
     assert out.iloc[0]["source"] == SOURCE_LABEL
 
 
@@ -120,12 +124,16 @@ def test_public_catalog_loader_metadata_and_matching(tmp_path):
     assert catalog.attrs["catalog_name"] == "Public Test"
     assert catalog.attrs["source"] == SOURCE_LABEL
     assert catalog.attrs["valid_count"] == 3
+    assert list(catalog["product_type"]) == ["foundation", "foundation", "tint"]
+    assert catalog["catalog_quality_score"].between(0.0, 1.0).all()
 
     skin_lab = catalog.iloc[1][["lab_l", "lab_a", "lab_b"]].to_numpy(dtype=float)
     matches = match_shades(np.array(skin_lab), catalog, top_k=3)
     assert len(matches) == 3
     assert matches[0].product == "Foundation"
     assert matches[0].source_url == "u2"
+    assert matches[0].product_type == "foundation"
+    assert matches[0].catalog_quality_score > 0.5
 
 
 def test_default_catalog_prefers_public_and_falls_back_to_mock(tmp_path):
