@@ -61,8 +61,12 @@ VARIANT_DELTA_E_WINDOW = 1.5
 VARIANT_HEX_RGB_DISTANCE = 10.0
 NEAR_DUPLICATE_DELTA_E = 1.2
 DISPLAY_MIN_DELTA_E_STEPS = (1.8, 1.2, 0.6, 0.0)
-MIN_DEDUP_SCAN_ROWS = 1000
-DEDUP_SCAN_MULTIPLIER = 500
+# Candidates are already sorted by their dominant CIEDE2000 score before
+# product/variant grouping. A bounded shortlist keeps deduplication responsive
+# for large public catalogs while leaving ample room to find three distinct
+# recommendations.
+MIN_DEDUP_SCAN_ROWS = 300
+DEDUP_SCAN_MULTIPLIER = 100
 CATALOG_QUALITY_CLOSE_PENALTY = 0.20
 UNCERTAINTY_LIGHT_MARGIN = 2.0
 STABILITY_SHORTLIST_SIZE = 100

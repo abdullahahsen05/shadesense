@@ -26,7 +26,6 @@ from src.shade_catalog import (
     CatalogValidationError,
     catalog_definitions,
     load_default_catalog,
-    load_shade_catalog,
     load_named_catalog,
 )
 from src.shade_matcher import match_shades
@@ -39,10 +38,25 @@ from src.visualization import (
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
+
+@st.cache_data(show_spinner=False)
+def _load_default_catalog_cached():
+    """Load and validate the default catalog once per source-code version."""
+    return load_default_catalog()
+
+
+@st.cache_data(show_spinner=False)
+def _load_named_catalog_cached(catalog_key: str):
+    """Reuse validated catalog data across Streamlit reruns."""
+    return load_named_catalog(catalog_key)
+
+
 st.title(APP_NAME)
 catalog_options = catalog_definitions()
 try:
-    default_catalog_key, _, default_catalog_warnings = load_default_catalog()
+    default_catalog_key, default_catalog_df, default_catalog_warnings = (
+        _load_default_catalog_cached()
+    )
 except (FileNotFoundError, CatalogValidationError) as exc:
     st.error(f"Could not load any shade catalog: {exc}")
     st.stop()
@@ -59,12 +73,14 @@ selected_catalog_key = st.selectbox(
 )
 
 try:
-    catalog_df = load_named_catalog(selected_catalog_key)
+    catalog_df = (
+        default_catalog_df
+        if selected_catalog_key == default_catalog_key
+        else _load_named_catalog_cached(selected_catalog_key)
+    )
 except (FileNotFoundError, CatalogValidationError) as exc:
     st.error(f"Selected shade catalog error: {exc}")
     st.stop()
-
-SHADE_CATALOG_PATH = catalog_options[selected_catalog_key].path
 
 st.caption(
     f"Selected catalog: {catalog_df.attrs.get('catalog_name', 'unknown')} | "
@@ -487,11 +503,9 @@ if uploaded_file is not None:
 
         if skin_result.success:
             st.subheader("Top 3 Shade Recommendations")
-            try:
-                catalog_df = load_shade_catalog(str(SHADE_CATALOG_PATH))
-            except (FileNotFoundError, CatalogValidationError) as exc:
-                st.error(f"Shade catalog error: {exc}")
-            else:
+            # Reuse the validated catalog selected above. Reloading the 7,000+
+            # row public catalog made every upload rerun needlessly slow.
+            if catalog_df is not None:
                 for w in catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
