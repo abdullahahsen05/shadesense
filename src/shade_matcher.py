@@ -49,7 +49,9 @@ class ShadeMatch:
     catalog_quality_score: float = 0.5
     recommendation_stability: float | None = None
     top3_stability: float | None = None
+    delta_e_median: float | None = None
     delta_e_p90: float | None = None
+    uncertainty_adjustment: float = 0.0
 
 
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
@@ -70,6 +72,9 @@ DEDUP_SCAN_MULTIPLIER = 100
 CATALOG_QUALITY_CLOSE_PENALTY = 0.20
 UNCERTAINTY_LIGHT_MARGIN = 2.0
 STABILITY_SHORTLIST_SIZE = 100
+POINT_DISTANCE_WEIGHT = 0.45
+UNCERTAINTY_MEDIAN_WEIGHT = 0.40
+UNCERTAINTY_TAIL_WEIGHT = 0.15
 
 
 def _normalize_key_text(value) -> str:
@@ -146,8 +151,58 @@ def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarra
     return np.linalg.norm(catalog_lab - np.asarray(skin_lab), axis=1)
 
 
-def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, rank: int = 0) -> ShadeMatch:
-    depth_penalty = float(ranking_scores[idx] - distances[idx])
+def _coerce_lab_samples(samples) -> np.ndarray | None:
+    if samples is None:
+        return None
+    array = np.asarray(samples, dtype=np.float64)
+    if array.ndim != 2 or array.shape[1] != 3 or len(array) == 0:
+        return None
+    finite = array[np.all(np.isfinite(array), axis=1)]
+    return finite if len(finite) else None
+
+
+def _distribution_distance_statistics(
+    catalog_lab: np.ndarray,
+    samples,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Return per-sample, median, and tail CIEDE2000 distances.
+
+    The implementation evaluates one sample against the full catalog at a
+    time, avoiding a large repeated Lab tensor for public catalogs.
+    """
+    sample_array = _coerce_lab_samples(samples)
+    if sample_array is None:
+        return None, None, None
+    sample_distances = np.vstack(
+        [_compute_delta_e(sample, catalog_lab) for sample in sample_array]
+    )
+    return (
+        sample_distances,
+        np.median(sample_distances, axis=0),
+        np.percentile(sample_distances, 90, axis=0),
+    )
+
+
+def _row_to_match(
+    row,
+    idx,
+    distances,
+    ranking_scores,
+    extracted_depth: str,
+    metadata_penalties=None,
+    median_distances=None,
+    p90_distances=None,
+    distribution_scores=None,
+    rank: int = 0,
+) -> ShadeMatch:
+    depth_penalty = (
+        float(metadata_penalties[idx]) if metadata_penalties is not None else 0.0
+    )
+    distribution_score = (
+        float(distribution_scores[idx])
+        if distribution_scores is not None
+        else float(distances[idx])
+    )
     shade_depth = row.get("depth") if pd.notna(row.get("depth")) else None
     return ShadeMatch(
         shade_id=str(row["shade_id"]),
@@ -170,6 +225,11 @@ def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, ran
         depth_sanity_note=depth_sanity_note(extracted_depth, shade_depth),
         product_type=str(row.get("product_type") or "other_base"),
         catalog_quality_score=float(row.get("catalog_quality_score", 0.5)),
+        delta_e_median=float(median_distances[idx])
+        if median_distances is not None
+        else None,
+        delta_e_p90=float(p90_distances[idx]) if p90_distances is not None else None,
+        uncertainty_adjustment=distribution_score - float(distances[idx]),
         rank=rank,
     )
 
@@ -286,8 +346,8 @@ def _apply_uncertainty_stability(
 ) -> None:
     if uncertainty_labs is None or not candidates:
         return
-    samples = np.asarray(uncertainty_labs, dtype=np.float64)
-    if samples.ndim != 2 or samples.shape[1] != 3 or len(samples) == 0:
+    samples = _coerce_lab_samples(uncertainty_labs)
+    if samples is None:
         return
     shortlist = candidates[:STABILITY_SHORTLIST_SIZE]
     labs = np.asarray([candidate.lab for candidate in shortlist], dtype=np.float64)
@@ -298,6 +358,7 @@ def _apply_uncertainty_stability(
     for idx, candidate in enumerate(shortlist):
         candidate.recommendation_stability = float(np.mean(order[:, 0] == idx))
         candidate.top3_stability = float(np.mean(np.any(order[:, : min(3, len(shortlist))] == idx, axis=1)))
+        candidate.delta_e_median = float(np.median(distances[:, idx]))
         candidate.delta_e_p90 = float(np.percentile(distances[:, idx], 90))
 
 
@@ -318,27 +379,43 @@ def match_shades(
 
     catalog_lab = catalog_df[["lab_l", "lab_a", "lab_b"]].to_numpy(dtype=np.float64)
     distances = _compute_delta_e(skin_lab, catalog_lab)
+    (
+        uncertainty_distance_grid,
+        uncertainty_median_distances,
+        uncertainty_p90_distances,
+    ) = _distribution_distance_statistics(catalog_lab, uncertainty_labs)
     estimated_depth = estimate_depth_from_lab_l(float(np.asarray(skin_lab, dtype=np.float64)[0]))
     best_delta = float(np.min(distances))
-    ranking_scores = distances.copy()
+    if uncertainty_distance_grid is None:
+        distribution_scores = distances.copy()
+    else:
+        distribution_scores = (
+            POINT_DISTANCE_WEIGHT * distances
+            + UNCERTAINTY_MEDIAN_WEIGHT * uncertainty_median_distances
+            + UNCERTAINTY_TAIL_WEIGHT * uncertainty_p90_distances
+        )
+    metadata_penalties = np.zeros_like(distances)
+    ranking_scores = distribution_scores.copy()
     supported_upper_l = None
-    if uncertainty_labs is not None:
-        uncertainty_array = np.asarray(uncertainty_labs, dtype=np.float64)
-        if uncertainty_array.ndim == 2 and uncertainty_array.shape[1] == 3 and len(uncertainty_array):
-            supported_upper_l = float(np.percentile(uncertainty_array[:, 0], 95))
+    uncertainty_array = _coerce_lab_samples(uncertainty_labs)
+    if uncertainty_array is not None:
+        supported_upper_l = float(np.percentile(uncertainty_array[:, 0], 95))
     if "depth" in catalog_df.columns:
         for idx, row in catalog_df.iterrows():
             if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
-                ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
-                ranking_scores[idx] += _too_light_penalty(
+                metadata_penalties[idx] += DEPTH_TIE_PENALTY * _depth_distance(
+                    estimated_depth, row.get("depth")
+                )
+                metadata_penalties[idx] += _too_light_penalty(
                     float(np.asarray(skin_lab, dtype=np.float64)[0]),
                     float(row.get("lab_l")),
                     supported_upper_l=supported_upper_l,
                 )
                 quality = float(row.get("catalog_quality_score", 0.5))
-                ranking_scores[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
+                metadata_penalties[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
                     1.0 - float(np.clip(quality, 0.0, 1.0))
                 )
+    ranking_scores += metadata_penalties
 
     order = np.lexsort((distances, ranking_scores))
 
@@ -346,7 +423,17 @@ def match_shades(
     ranked_candidates = []
     for idx in order[:dedup_scan_limit]:
         row = catalog_df.iloc[idx]
-        candidate = _row_to_match(row, idx, distances, ranking_scores, estimated_depth)
+        candidate = _row_to_match(
+            row,
+            idx,
+            distances,
+            ranking_scores,
+            estimated_depth,
+            metadata_penalties=metadata_penalties,
+            median_distances=uncertainty_median_distances,
+            p90_distances=uncertainty_p90_distances,
+            distribution_scores=distribution_scores,
+        )
         ranked_candidates.append(candidate)
 
     grouped_candidates = _group_ranked_candidates(ranked_candidates)

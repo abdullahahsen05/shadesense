@@ -368,7 +368,68 @@ def test_uncertainty_samples_add_recommendation_stability():
     assert matches[0].recommendation_stability is not None
     assert matches[0].recommendation_stability > 0.8
     assert matches[0].top3_stability == 1.0
+    assert matches[0].delta_e_median is not None
     assert matches[0].delta_e_p90 is not None
+
+
+def test_uncertainty_distribution_can_promote_consistently_better_shade():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["point", "robust", "far"],
+            "brand": ["Point", "Robust", "Far"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Point", "Robust", "Far"],
+            "hex": ["#806050", "#8A6858", "#A08070"],
+            "r": [128, 138, 160],
+            "g": [96, 104, 128],
+            "b": [80, 88, 112],
+            "lab_l": [50.0, 54.0, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    samples = np.repeat([[54.0, 8.0, 14.0]], repeats=31, axis=0)
+
+    point_only = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=1)
+    distribution_ranked = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=1,
+        uncertainty_labs=samples,
+    )
+
+    assert point_only[0].shade_id == "point"
+    assert distribution_ranked[0].shade_id == "robust"
+    assert distribution_ranked[0].delta_e > point_only[0].delta_e
+    assert distribution_ranked[0].delta_e_median < distribution_ranked[0].delta_e
+    assert distribution_ranked[0].uncertainty_adjustment < 0.0
+
+
+def test_invalid_uncertainty_samples_leave_point_ranking_unchanged():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A", "B"],
+            "brand": ["A", "B"],
+            "shade_name": ["A", "B"],
+            "hex": ["#806050", "#906858"],
+            "r": [128, 144],
+            "g": [96, 104],
+            "b": [80, 88],
+            "lab_l": [50.0, 58.0],
+            "lab_a": [8.0, 8.0],
+            "lab_b": [14.0, 14.0],
+        }
+    )
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=2,
+        uncertainty_labs=np.array([[np.nan, 8.0, 14.0]]),
+    )
+
+    assert [match.shade_id for match in matches] == ["A", "B"]
+    assert all(match.delta_e_median is None for match in matches)
 
 
 def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
