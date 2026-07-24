@@ -121,9 +121,10 @@ if uploaded_file is not None:
         st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
 
     face_result = detect_face_landmarks(provisional_corrected_rgb)
-    image_quality = analyze_image_quality(
+    provisional_image_quality = analyze_image_quality(
         image_rgb, face_result.landmarks if face_result.success else None
     )
+    image_quality = provisional_image_quality
 
     for warning in face_result.warnings:
         st.warning(warning)
@@ -136,7 +137,10 @@ if uploaded_file is not None:
             image_rgb,
             masks,
             face_result.landmarks,
-            pose_asymmetry=image_quality.pose_asymmetry,
+            pose_asymmetry=provisional_image_quality.pose_asymmetry,
+        )
+        image_quality = analyze_image_quality(
+            image_rgb, face_result.landmarks, masks=masks
         )
         lighting_quality = analyze_lighting_quality(image_rgb, masks=masks)
         correction_settings = correction_settings_for_lighting(lighting_quality)

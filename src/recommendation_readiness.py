@@ -38,6 +38,7 @@ def build_recommendation_readiness(
     sensitivity_score = float(sensitivity.get("score", 100.0))
     sensitivity_radius = float(sensitivity.get("delta_e_p90", 0.0))
     success = bool(getattr(skin_result, "success", False))
+    low_signal = bool(getattr(lighting_quality, "low_signal", False))
     rank_score = 100.0
     bootstrap_family_top3 = 1.0
     lighting_family_top3 = 1.0
@@ -70,12 +71,18 @@ def build_recommendation_readiness(
             + 0.30 * lighting_family_top3
         )
 
+    capture_certainty = float(np.clip(100.0 * (1.0 - radius / 12.0), 0.0, 100.0))
+    sensitivity_certainty = float(
+        np.clip(100.0 * (1.0 - sensitivity_radius / 8.0), 0.0, 100.0)
+    )
     combined = float(
         np.clip(
-            0.50 * extraction_score
-            + 0.15 * (lighting_score * 100.0)
-            + 0.20 * stability
+            0.40 * extraction_score
+            + 0.13 * (lighting_score * 100.0)
+            + 0.12 * stability
+            + 0.10 * capture_certainty
             + 0.10 * sensitivity_score
+            + 0.10 * sensitivity_certainty
             + 0.05 * rank_score,
             0.0,
             100.0,
@@ -90,35 +97,59 @@ def build_recommendation_readiness(
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
 
+    if low_signal:
+        return RecommendationReadiness(
+            state="provisional",
+            score=combined,
+            confidence_cap=0.55,
+            summary=(
+                "Recommendations are provisional because facial skin regions "
+                "do not contain enough reliable light and color signal."
+            ),
+            reasons=reasons
+            + ["Low-signal face lighting requires a brighter, more even recapture."],
+            warnings=[
+                "Retake the photo in brighter, even daylight. The Top 3 remain "
+                "visible as provisional candidates only."
+            ],
+        )
+
     if (
         success
-        and extraction_score >= 70.0
-        and lighting_score >= 0.65
-        and radius <= 6.0
-        and sensitivity_score >= 70.0
-        and sensitivity_radius <= 3.0
-        and bootstrap_family_top3 >= 0.70
-        and lighting_family_top3 >= 0.60
+        and combined >= 74.0
+        and extraction_score >= 68.0
+        and lighting_score >= 0.60
+        and radius <= 7.5
+        and sensitivity_radius <= 4.5
+        and bootstrap_family_top3 >= 0.55
+        and lighting_family_top3 >= 0.45
     ):
+        confidence_cap = float(
+            np.clip(0.78 + 0.15 * ((combined - 74.0) / 16.0), 0.78, 0.93)
+        )
         return RecommendationReadiness(
             state="ready",
             score=combined,
-            confidence_cap=0.93,
+            confidence_cap=confidence_cap,
             summary="Recommendation evidence is ready for comparison with the catalog.",
             reasons=reasons,
         )
     if (
         success
+        and combined >= 52.0
         and extraction_score >= 50.0
         and radius <= 10.0
-        and sensitivity_radius <= 6.0
+        and sensitivity_radius <= 6.5
         and bootstrap_family_top3 >= 0.35
         and lighting_family_top3 >= 0.30
     ):
+        confidence_cap = float(
+            np.clip(0.55 + 0.20 * ((combined - 52.0) / 22.0), 0.55, 0.75)
+        )
         return RecommendationReadiness(
             state="caution",
             score=combined,
-            confidence_cap=0.75,
+            confidence_cap=confidence_cap,
             summary="Recommendations are usable with caution; image or extraction evidence is limited.",
             reasons=reasons,
             warnings=["Consider retaking the photo in soft, even daylight for a more stable ranking."],

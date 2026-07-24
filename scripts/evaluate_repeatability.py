@@ -35,11 +35,12 @@ def analyze_file(path: Path) -> tuple[CaptureEvidence | None, dict]:
     face = detect_face_landmarks(provisional)
     if not face.success:
         return None, {"capture_id": path.name, "error": face.error}
-    image_quality = analyze_image_quality(image, face.landmarks)
+    provisional_image_quality = analyze_image_quality(image, face.landmarks)
     masks = build_region_masks(image.shape, face.landmarks)
     masks, mask_diagnostics = refine_masks_for_capture(
-        image, masks, face.landmarks, image_quality.pose_asymmetry
+        image, masks, face.landmarks, provisional_image_quality.pose_asymmetry
     )
+    image_quality = analyze_image_quality(image, face.landmarks, masks=masks)
     lighting = analyze_lighting_quality(image, masks)
     corrected, _ = apply_mild_color_correction(
         image, **correction_settings_for_lighting(lighting)

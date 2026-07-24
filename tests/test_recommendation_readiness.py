@@ -27,8 +27,8 @@ def _skin(
     )
 
 
-def _lighting(score: float):
-    return SimpleNamespace(score=score)
+def _lighting(score: float, low_signal: bool = False):
+    return SimpleNamespace(score=score, low_signal=low_signal)
 
 
 def test_readiness_thresholds_are_deterministic():
@@ -48,9 +48,12 @@ def test_readiness_thresholds_are_deterministic():
         _lighting(0.50),
     )
 
-    assert (ready.state, ready.confidence_cap) == ("ready", 0.93)
-    assert (caution.state, caution.confidence_cap) == ("caution", 0.75)
-    assert (provisional.state, provisional.confidence_cap) == ("provisional", 0.55)
+    assert ready.state == "ready"
+    assert caution.state == "caution"
+    assert provisional.state == "provisional"
+    assert 0.78 <= ready.confidence_cap <= 0.93
+    assert 0.55 <= caution.confidence_cap <= 0.75
+    assert provisional.confidence_cap == 0.55
     assert "Top 3" in provisional.warnings[0]
 
 
@@ -75,6 +78,34 @@ def test_lighting_sensitivity_can_downgrade_readiness():
     assert caution.state == "caution"
     assert provisional.state == "provisional"
     assert "Lighting sensitivity" in provisional.reasons[-1]
+
+
+def test_low_signal_forces_provisional_even_when_other_evidence_is_strong():
+    readiness = build_recommendation_readiness(
+        _skin(2.0, 95.0, sensitivity_score=95.0, sensitivity_radius=1.0),
+        {"overall_score": 90.0},
+        _lighting(0.85, low_signal=True),
+    )
+
+    assert readiness.state == "provisional"
+    assert readiness.confidence_cap == 0.55
+    assert any("Low-signal" in reason for reason in readiness.reasons)
+
+
+def test_small_sensitivity_change_does_not_create_three_delta_e_state_cliff():
+    below = build_recommendation_readiness(
+        _skin(4.0, 90.0, sensitivity_score=72.0, sensitivity_radius=2.9),
+        {"overall_score": 82.0},
+        _lighting(0.75),
+    )
+    above = build_recommendation_readiness(
+        _skin(4.0, 90.0, sensitivity_score=70.0, sensitivity_radius=3.1),
+        {"overall_score": 82.0},
+        _lighting(0.75),
+    )
+
+    assert below.state == above.state == "ready"
+    assert abs(below.confidence_cap - above.confidence_cap) < 0.02
 
 
 def test_provisional_state_caps_match_confidence_but_keeps_match():
