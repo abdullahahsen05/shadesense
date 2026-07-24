@@ -5,8 +5,6 @@ This module contains presentation logic only. CV/matching logic lives in `src/`.
 
 import numpy as np
 import streamlit as st
-from PIL import Image
-
 from src.color_correction import apply_mild_color_correction, correction_settings_for_lighting
 from src.confidence import build_quality_report, compute_confidence
 from src.config import APP_NAME, TOP_K_SHADES
@@ -16,6 +14,7 @@ from src.extraction_summary import build_skin_extraction_summary
 from src.extraction_selection import run_dual_extraction
 from src.face_detection import detect_face_landmarks
 from src.image_quality import analyze_image_quality
+from src.image_io import open_rgb_image
 from src.lighting_quality import analyze_lighting_quality
 from src.lighting_sensitivity import analyze_lighting_sensitivity
 from src.region_masks import build_region_masks
@@ -107,7 +106,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
+    image = open_rgb_image(uploaded_file)
     image_rgb = np.array(image)
     global_lighting_quality = analyze_lighting_quality(image_rgb)
     provisional_settings = correction_settings_for_lighting(global_lighting_quality)
