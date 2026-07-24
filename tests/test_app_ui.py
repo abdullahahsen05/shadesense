@@ -7,7 +7,7 @@ def _page_text(at):
     return "\n".join(
         [
             getattr(item, "value", "")
-            for group in [at.subheader, at.markdown, at.caption, at.info]
+            for group in [at.subheader, at.markdown, at.caption, at.info, at.metric]
             for item in group
         ]
     )
@@ -50,7 +50,12 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Dominant/trusted region contribution:" in page_text
     assert "Region Stability Analysis" in page_text
     assert "Region stability score:" in page_text
-    assert "Most influential region:" in page_text
+    assert "Most sensitive leave-one-out region:" in page_text
+    assert any(
+        getattr(metric, "label", "") == "Raw region extraction score"
+        for metric in at.metric
+    )
+    assert "internal region/pixel score" in page_text
     assert "Stability summary:" in page_text
     assert "Jawline reduction reason:" in page_text
     assert "Final depth estimate:" in page_text

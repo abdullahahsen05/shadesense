@@ -304,7 +304,15 @@ if uploaded_file is not None:
             )
             st.caption(f"Shade extraction source: {source_label}")
             st.caption(f"Selection reason: {extraction_selection.reason}")
-            st.metric("Extraction quality score", f"{skin_result.quality_score:.0%}")
+            st.metric(
+                "Raw region extraction score",
+                f"{skin_result.quality_score:.0%}",
+            )
+            st.caption(
+                "This is an internal region/pixel score. The formal Skin "
+                "Extraction Quality below also includes capture, lighting, "
+                "uncertainty, and cross-region stability."
+            )
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Measured visible skin tone: RGB {skin_result.rgb}")
             st.caption(f"Measured visible Lab: {lab_rounded}")
@@ -513,7 +521,7 @@ if uploaded_file is not None:
             st.caption(f"Region stability score: {stability_diag.get('stability_score', 0):.0f}/100")
             st.caption(f"Region stability label: {stability_diag.get('stability_label', 'unknown')}")
             st.caption(
-                "Most influential region: "
+                "Most sensitive leave-one-out region: "
                 f"{str(stability_diag.get('most_influential_region', 'none')).replace('_', ' ').title()}"
             )
             st.caption(f"Stability summary: {stability_diag.get('summary', 'not available')}")

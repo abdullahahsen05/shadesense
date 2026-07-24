@@ -692,6 +692,8 @@ def test_outlier_region_lowers_stability_and_identifies_most_influential_region(
         stability["leave_one_out_delta_e"],
         key=stability["leave_one_out_delta_e"].get,
     )
+    assert "largest leave-one-region-out color change" in stability["summary"]
+    assert "stronger influence" not in stability["summary"]
     assert stability["unstable_regions"]
     assert any("region stability was" in warning.lower() for warning in skin.warnings)
     assert any("confidence was reduced" in reason.lower() for reason in skin.extraction_quality_reasons)

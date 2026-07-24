@@ -1323,8 +1323,8 @@ def _region_stability_summary(label: str, most_influential_region: str | None) -
         else "one region"
     )
     return (
-        f"Region stability was {label}; {region_text} had stronger influence, "
-        "so confidence was reduced."
+        f"Region stability was {label}; removing {region_text} caused the "
+        "largest leave-one-region-out color change, so confidence was reduced."
     )
 
 
