@@ -127,7 +127,12 @@ Responsibilities:
 Expected functions:
 
 ```python
-def match_shades(skin_lab: np.ndarray, catalog_df: pd.DataFrame, top_k: int = 3) -> list[ShadeMatch]:
+def match_shades(
+    skin_lab: np.ndarray,
+    catalog_df: pd.DataFrame,
+    top_k: int = 3,
+    uncertainty_labs=None,
+) -> list[ShadeMatch]:
     ...
 ```
 
@@ -137,11 +142,14 @@ Responsibilities:
 - Apply penalties for poor image quality.
 - Apply penalties for region disagreement.
 - Apply penalties when Top 1 and Top 2 are too close.
+- Include patch-bootstrap uncertainty, recommendation stability, and catalog
+  evidence.
+- Enforce readiness-specific confidence caps.
 
 Expected functions:
 
 ```python
-def compute_confidence(matches, quality_report) -> list[ShadeMatch]:
+def compute_confidence(matches, quality_report, readiness=None) -> list[ShadeMatch]:
     ...
 ```
 
@@ -181,6 +189,8 @@ class SkinToneResult:
     lab: tuple[float, float, float]
     region_results: dict
     quality_score: float
+    bootstrap_labs: list[tuple[float, float, float]]
+    uncertainty_diagnostics: dict
     warnings: list[str]
 
 @dataclass
@@ -193,20 +203,27 @@ class ShadeMatch:
     lab: tuple[float, float, float]
     delta_e: float
     confidence: float
+    recommendation_stability: float
+    top3_stability: float
+    catalog_quality_score: float
     explanation: str
 ```
 
 ## Confidence Model
 Confidence should be understandable, not mathematically overcomplicated.
 
-Suggested factors:
+Current factors:
 
 ```text
-match_distance_score     50%
-region_consistency       20%
-valid_pixel_ratio        10%
-face_detection_quality   10%
-top_match_separation     10%
+match_distance_score          38%
+region_consistency            15%
+valid_pixel_ratio              8%
+lighting_quality               8%
+face_detection_quality         4%
+top_match_separation           7%
+extraction_uncertainty        10%
+recommendation_stability       7%
+catalog_quality                3%
 ```
 
 Confidence should decrease when:
@@ -215,6 +232,12 @@ Confidence should decrease when:
 - Too few valid pixels remain after filtering.
 - The face is small or partially occluded.
 - The best and second-best shade are almost tied.
+- Bootstrap samples produce unstable color or recommendation rankings.
+- Catalog metadata is incomplete.
+
+Ready recommendations are capped at 93%, caution recommendations at 75%, and
+provisional recommendations at 55%. These are heuristic engineering scores,
+not calibrated probabilities.
 
 ## Matching Algorithm
 Use Lab + CIEDE2000 if available through `skimage.color.deltaE_ciede2000`.

@@ -37,6 +37,9 @@
 - Mild color correction (gray-world + light CLAHE) is intentionally
   conservative; it does not correct strong color casts (e.g. colored indoor
   lighting) beyond a moderate amount.
+- Bootstrap intervals quantify disagreement between retained patches, but they
+  are internal resampling uncertainty rather than calibrated real-world error
+  bounds. Dataset validation with measured skin color is still required.
 
 ## Shade catalog and matching
 - Ships with a mock catalog (`data/shade_catalog_mock.csv`, 18 shades). Real
@@ -48,10 +51,13 @@
   `tests/test_shade_matcher.py`).
 
 ## Confidence
-- Confidence is a heuristic, interpretable weighted combination (match
-  distance 50%, region consistency 20%, valid pixel ratio 10%, face quality
-  10%, top1/top2 separation 10%), not a calibrated statistical probability.
-  It is capped below 93% by design so the app never claims near-certainty.
+- Confidence is a heuristic, interpretable combination of match distance,
+  region/pixel reliability, face-aware lighting, face quality, patch-bootstrap
+  uncertainty, recommendation stability, catalog evidence, and Top-1/Top-2
+  separation. It is not a calibrated statistical probability.
+- Confidence is capped below 93% by design. `caution` recommendations are
+  capped at 75% and `provisional` recommendations at 55%, while still returning
+  the required Top 3 candidates.
 
 ## Testing
 - Automated tests use a single real photographic face (scikit-image's

@@ -38,13 +38,18 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 2. The app detects the face and MediaPipe face landmarks.
 3. Cheek, forehead, and jawline masks are extracted while avoiding eyes, lips,
    eyebrows, hairline, and under-chin shadow where possible.
-4. A representative skin color is computed from stable diffuse skin patches.
-5. The app separates measured visible skin tone from foundation target tone when
+4. Face-aware lighting diagnostics measure the actual forehead, cheek, and
+   jawline regions instead of the image background.
+5. A representative skin color is computed from adaptive diffuse patches using
+   a CIEDE2000 medoid, robust outlier rejection, and bounded region influence.
+6. Deterministic patch bootstrapping quantifies extraction and recommendation
+   stability.
+7. The app separates measured visible skin tone from foundation target tone when
    glossy highlights could bias rich/deep skin recommendations too light.
-6. The target color is matched against the selected local catalog using CIEDE2000
-   perceptual color distance in Lab space.
-7. The app shows visually distinct Top 3 shade recommendations with confidence
-   scores, diagnostics, and reasoning.
+8. The target color is matched against the selected local catalog using CIEDE2000
+   perceptual color distance in Lab space, with metadata affecting only close ties.
+9. The app always shows visually distinct Top 3 candidates with readiness-aware
+   confidence, uncertainty diagnostics, and reasoning.
 
 ## Project Structure
 
@@ -83,10 +88,11 @@ image upload
 -> MediaPipe face detection and landmarks
 -> cheek / forehead / jawline masks
 -> adaptive skin-pixel filtering
--> stable patch extraction and robust Lab aggregation
+-> adaptive patch extraction and perceptual medoid consensus
+-> deterministic bootstrap uncertainty
 -> optional depth-safe foundation target adjustment
--> CIEDE2000 shade matching with duplicate candidate grouping
--> Top 3 recommendations, confidence, and explanations
+-> CIEDE2000 shade matching with uncertainty and catalog evidence
+-> Top 3 recommendations, readiness-aware confidence, and explanations
 ```
 
 ## Shade Catalog
