@@ -26,6 +26,8 @@ PATCH_SIZE = 18
 PATCH_STRIDE = 12
 MIN_ADAPTIVE_PATCH_SIZE = 12
 MAX_ADAPTIVE_PATCH_SIZE = 36
+BOOTSTRAP_ITERATIONS = 96
+BOOTSTRAP_SEED = 20260724
 MIN_VALID_PIXELS_PER_PATCH = 45
 MIN_STABLE_PATCHES_PER_REGION = 2
 MAX_STABLE_PATCHES_PER_REGION = 8
@@ -165,6 +167,8 @@ class SkinToneResult:
     foundation_target_active: bool = False
     foundation_target_reason: str = ""
     foundation_target_diagnostics: dict = field(default_factory=dict)
+    bootstrap_labs: list = field(default_factory=list)
+    uncertainty_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None
@@ -1168,6 +1172,13 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
             "outlier_threshold_delta_e": outlier_threshold,
             "patch_foundation_target_lab": tuple(target_lab_array.tolist()),
             "patch_foundation_target_rgb": _lab_to_rgb_tuple(target_lab_array),
+            "retained_patch_labs": [
+                tuple(candidates[idx]["lab"].tolist()) for idx in kept_indices
+            ],
+            "retained_patch_weights": [float(weight) for weight in kept_weights],
+            "retained_patch_regions": [
+                str(candidates[idx]["region"]) for idx in kept_indices
+            ],
         }
     )
     diagnostics["region_contributions"] = {
@@ -1175,6 +1186,88 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         for region, weight in region_weight_totals.items()
     }
     return final_rgb, tuple(final_lab_array.tolist()), diagnostics
+
+
+def _bootstrap_patch_uncertainty(
+    patch_diagnostics: dict,
+    reference_lab: tuple,
+) -> tuple[list[tuple], dict]:
+    labs_raw = patch_diagnostics.get("retained_patch_labs", [])
+    weights_raw = patch_diagnostics.get("retained_patch_weights", [])
+    regions = patch_diagnostics.get("retained_patch_regions", [])
+    fallback = {
+        "bootstrap_iterations": 0,
+        "lab_std": (0.0, 0.0, 0.0),
+        "lab_interval_90": {},
+        "l_interval_90": None,
+        "delta_e_radius_p90": 12.0,
+        "patch_agreement": 0.0,
+        "stability_score": 45.0,
+        "method": "insufficient stable patches",
+    }
+    if len(labs_raw) < 3 or len(set(regions)) < 2:
+        return [], fallback
+
+    labs = np.asarray(labs_raw, dtype=np.float64)
+    weights = np.asarray(weights_raw, dtype=np.float64)
+    if len(weights) != len(labs) or weights.sum() <= 0:
+        weights = np.ones(len(labs), dtype=np.float64)
+    region_indices = {
+        region: np.array([idx for idx, value in enumerate(regions) if value == region], dtype=int)
+        for region in dict.fromkeys(regions)
+    }
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    samples = []
+    for _ in range(BOOTSTRAP_ITERATIONS):
+        sample_indices = []
+        for indices in region_indices.values():
+            sample_indices.extend(
+                rng.choice(indices, size=len(indices), replace=True).tolist()
+            )
+        sample_indices_array = np.asarray(sample_indices, dtype=int)
+        samples.append(
+            _weighted_lab_mean(
+                labs[sample_indices_array],
+                weights[sample_indices_array],
+            )
+        )
+
+    sample_array = np.stack(samples)
+    reference = np.asarray(reference_lab, dtype=np.float64)
+    reference_tiled = np.tile(reference, (len(sample_array), 1))
+    radii = deltaE_ciede2000(reference_tiled, sample_array)
+    lower = np.percentile(sample_array, 5, axis=0)
+    upper = np.percentile(sample_array, 95, axis=0)
+    radius_p90 = float(np.percentile(radii, 90))
+    patch_agreement = float(np.clip(1.0 - radius_p90 / 12.0, 0.0, 1.0))
+    diagnostics = {
+        "bootstrap_iterations": BOOTSTRAP_ITERATIONS,
+        "lab_std": tuple(np.std(sample_array, axis=0).tolist()),
+        "lab_interval_90": {
+            channel: (float(lower[idx]), float(upper[idx]))
+            for idx, channel in enumerate(("l", "a", "b"))
+        },
+        "l_interval_90": (float(lower[0]), float(upper[0])),
+        "delta_e_radius_p90": radius_p90,
+        "patch_agreement": patch_agreement,
+        "stability_score": float(np.clip(45.0 + 55.0 * patch_agreement, 0.0, 100.0)),
+        "method": "96 deterministic stratified patch bootstrap samples",
+    }
+    return [tuple(sample.tolist()) for sample in sample_array], diagnostics
+
+
+def _shift_bootstrap_to_target(
+    bootstrap_labs: list[tuple],
+    measured_lab: tuple,
+    target_lab: tuple,
+) -> list[tuple]:
+    if not bootstrap_labs:
+        return []
+    samples = np.asarray(bootstrap_labs, dtype=np.float64)
+    offset = np.asarray(target_lab, dtype=np.float64) - np.asarray(measured_lab, dtype=np.float64)
+    shifted = samples + offset
+    shifted[:, 0] = np.clip(shifted[:, 0], 0.0, 100.0)
+    return [tuple(sample.tolist()) for sample in shifted]
 
 
 def _weighted_region_blend(combination_regions: list) -> tuple[tuple, tuple]:
@@ -1304,6 +1397,7 @@ def _region_has_highlight_bias(region: RegionSkinResult) -> bool:
 
 def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict]:
     candidates = []
+    region_lightness: dict[str, float] = {}
     for name in (*CHEEK_NAMES, JAWLINE_NAME):
         region = region_results.get(name)
         if region is None or not region.reliable or region.excluded or region.median_lab is None:
@@ -1327,12 +1421,29 @@ def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict
             if name == JAWLINE_NAME:
                 weight *= 1.25
             candidates.append((name, lab, weight))
+        region_lightness[name] = float(
+            _weighted_percentile(
+                np.array([lab[0] for lab in labs], dtype=np.float64),
+                np.array(weights, dtype=np.float64),
+                40.0,
+            )
+        )
 
+    represented_regions = list(dict.fromkeys([name for name, _, _ in candidates]))
+    region_l_span = (
+        max(region_lightness.values()) - min(region_lightness.values())
+        if len(region_lightness) >= 2
+        else 0.0
+    )
+    region_agreement = len(region_lightness) >= 2 and region_l_span <= 10.0
     diagnostics = {
         "lower_face_patch_count": len(candidates),
-        "lower_face_regions": list(dict.fromkeys([name for name, _, _ in candidates])),
+        "lower_face_regions": represented_regions,
+        "lower_face_region_lightness": region_lightness,
+        "lower_face_region_l_span": region_l_span,
+        "lower_face_region_agreement": region_agreement,
     }
-    if len(candidates) < 2 or JAWLINE_NAME not in diagnostics["lower_face_regions"]:
+    if len(candidates) < 2 or not region_agreement:
         return None, diagnostics
     labs = np.stack([lab for _, lab, _ in candidates])
     weights = np.array([weight for _, _, weight in candidates], dtype=np.float64)
@@ -1350,9 +1461,8 @@ def _build_foundation_target(
     measured_rgb_tuple = tuple(int(v) for v in measured_rgb)
     diagnostics = {
         "criteria": {
-            "deep_or_rich_deep": depth_estimate in {"deep", "rich-deep"},
             "highlight_influence": False,
-            "central_brighter_than_lower": False,
+            "measured_brighter_than_lower": False,
             "lower_face_reliable": False,
         },
         "measured_lab": tuple(measured_lab_array.tolist()),
@@ -1367,7 +1477,7 @@ def _build_foundation_target(
     lower_l, lower_diag = _lower_face_depth_evidence(region_results)
     diagnostics.update(lower_diag)
     diagnostics["lower_face_depth_l"] = lower_l
-    diagnostics["criteria"]["lower_face_reliable"] = lower_l is not None
+    diagnostics["criteria"]["lower_face_reliable"] = False
 
     central_regions = [
         region
@@ -1378,15 +1488,22 @@ def _build_foundation_target(
     diagnostics["central_face_l"] = central_l
     if lower_l is not None:
         diagnostics["central_minus_lower_l"] = central_l - lower_l
-        diagnostics["criteria"]["central_brighter_than_lower"] = (central_l - lower_l) >= 5.0
+        diagnostics["measured_minus_lower_l"] = float(measured_lab_array[0] - lower_l)
+        diagnostics["criteria"]["measured_brighter_than_lower"] = bool(
+            (measured_lab_array[0] - lower_l) >= 3.0
+        )
+        diagnostics["criteria"]["lower_face_reliable"] = bool(
+            diagnostics["criteria"]["measured_brighter_than_lower"]
+        )
     else:
         diagnostics["central_minus_lower_l"] = 0.0
+        diagnostics["measured_minus_lower_l"] = 0.0
 
     target_lab = measured_lab_array.copy()
     patch_target = patch_voting_diagnostics.get("patch_foundation_target_lab")
     if patch_target is not None:
         patch_target_lab = np.array(patch_target, dtype=np.float64)
-        target_lab[1:] = 0.75 * measured_lab_array[1:] + 0.25 * patch_target_lab[1:]
+        target_lab[1:] = 0.25 * measured_lab_array[1:] + 0.75 * patch_target_lab[1:]
 
     all_criteria = all(diagnostics["criteria"].values())
     if not all_criteria:
@@ -1395,9 +1512,16 @@ def _build_foundation_target(
         diagnostics["reason"] = reason
         return measured_rgb_tuple, tuple(measured_lab_array.tolist()), False, reason, diagnostics
 
-    conservative_l = min(float(measured_lab_array[0]), 0.70 * float(lower_l) + 0.30 * float(measured_lab_array[0]))
-    max_shift = 5.0 if depth_estimate == "rich-deep" else 3.5
-    target_l = max(float(measured_lab_array[0]) - max_shift, conservative_l)
+    supported_gap = float(measured_lab_array[0] - lower_l)
+    max_shift = (
+        5.0
+        if depth_estimate == "rich-deep"
+        else 4.0
+        if depth_estimate in {"tan", "deep"}
+        else 3.0
+    )
+    supported_shift = min(max_shift, 0.60 * supported_gap)
+    target_l = float(measured_lab_array[0]) - supported_shift
     if float(measured_lab_array[0]) - target_l < 1.0:
         reason = "Foundation target matches measured visible tone; lower-face evidence did not support a meaningful deeper target."
         diagnostics["active"] = False
@@ -1418,6 +1542,8 @@ def _build_foundation_target(
             "target_lab": target_lab_tuple,
             "target_rgb": target_rgb,
             "l_adjustment": float(measured_lab_array[0] - target_l),
+            "maximum_l_adjustment": max_shift,
+            "supported_l_gap": supported_gap,
         }
     )
     return target_rgb, target_lab_tuple, True, reason, diagnostics
@@ -1570,6 +1696,10 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     final_rgb, final_lab, patch_voting_diagnostics = _final_color_from_regions(combination_regions)
     if not patch_voting_diagnostics.get("used") and patch_voting_diagnostics.get("fallback_reason"):
         warnings.append(patch_voting_diagnostics["fallback_reason"])
+    measured_bootstrap_labs, uncertainty_diagnostics = _bootstrap_patch_uncertainty(
+        patch_voting_diagnostics,
+        final_lab,
+    )
     depth_diagnostic = build_skin_depth_diagnostic(final_lab)
     (
         foundation_target_rgb,
@@ -1583,6 +1713,11 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         region_results,
         patch_voting_diagnostics,
         depth_diagnostic.depth_category,
+    )
+    bootstrap_labs = _shift_bootstrap_to_target(
+        measured_bootstrap_labs,
+        final_lab,
+        foundation_target_lab,
     )
     if foundation_target_active:
         warnings.append(foundation_target_reason)
@@ -1645,6 +1780,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         foundation_target_active=foundation_target_active,
         foundation_target_reason=foundation_target_reason,
         foundation_target_diagnostics=foundation_target_diagnostics,
+        bootstrap_labs=bootstrap_labs,
+        uncertainty_diagnostics=uncertainty_diagnostics,
         depth_estimate=depth_diagnostic.depth_category,
         ita_degrees=depth_diagnostic.ita_degrees,
         ita_category=depth_diagnostic.ita_category,

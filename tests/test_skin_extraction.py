@@ -12,6 +12,7 @@ from src.skin_extraction import (
     RegionSkinResult,
     _aggregate_patch_candidates,
     _assert_skimage_lab_scale,
+    _bootstrap_patch_uncertainty,
     extract_skin_tone,
     _filter_skin_pixels,
     _lab_distance,
@@ -832,3 +833,46 @@ def test_perceptual_consensus_reports_medoid_and_caps_region_influence():
     contributions = diagnostics["region_contributions"]
     assert contributions.get("forehead", 0.0) <= 0.15 + 1e-6
     assert contributions.get("jawline", 0.0) <= 0.30 + 1e-6
+
+
+def test_bootstrap_uncertainty_is_deterministic_and_tracks_patch_spread():
+    stable_diag = {
+        "retained_patch_labs": [
+            (50.0, 12.0, 18.0),
+            (50.3, 12.1, 18.1),
+            (49.8, 11.9, 17.9),
+            (50.1, 12.0, 18.2),
+        ],
+        "retained_patch_weights": [1.0, 1.0, 1.0, 1.0],
+        "retained_patch_regions": [
+            "left_cheek",
+            "left_cheek",
+            "right_cheek",
+            "right_cheek",
+        ],
+    }
+    varied_diag = {
+        **stable_diag,
+        "retained_patch_labs": [
+            (44.0, 8.0, 13.0),
+            (54.0, 16.0, 23.0),
+            (45.0, 9.0, 14.0),
+            (55.0, 17.0, 24.0),
+        ],
+    }
+
+    samples_a, stable = _bootstrap_patch_uncertainty(
+        stable_diag, (50.0, 12.0, 18.0)
+    )
+    samples_b, stable_again = _bootstrap_patch_uncertainty(
+        stable_diag, (50.0, 12.0, 18.0)
+    )
+    _, varied = _bootstrap_patch_uncertainty(
+        varied_diag, (50.0, 12.0, 18.0)
+    )
+
+    assert len(samples_a) == 96
+    assert samples_a == samples_b
+    assert stable == stable_again
+    assert varied["delta_e_radius_p90"] > stable["delta_e_radius_p90"]
+    assert varied["stability_score"] < stable["stability_score"]
