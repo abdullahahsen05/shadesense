@@ -798,3 +798,37 @@ def test_no_reliable_cheek_skips_forehead_jawline_rules_gracefully():
     jawline = skin.region_results["jawline"]
     assert forehead.excluded is False
     assert jawline.weight_multiplier == 1.0
+
+
+def test_patch_sampling_scales_with_region_resolution():
+    small = np.full((80, 80, 3), (150, 105, 78), dtype=np.uint8)
+    large = np.full((240, 240, 3), (150, 105, 78), dtype=np.uint8)
+    small_mask = np.full((80, 80), 255, dtype=np.uint8)
+    large_mask = np.full((240, 240), 255, dtype=np.uint8)
+
+    _, _, _, small_stats = _stable_patch_medians(small, small_mask, "left_cheek")
+    _, _, _, large_stats = _stable_patch_medians(large, large_mask, "left_cheek")
+
+    assert large_stats["patch_size"] > small_stats["patch_size"]
+    assert all(evidence.region == "left_cheek" for evidence in small_stats["patch_evidence"])
+    assert all(evidence.size == small_stats["patch_size"] for evidence in small_stats["patch_evidence"])
+
+
+def test_perceptual_consensus_reports_medoid_and_caps_region_influence():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(155, 111, 82),
+        left_cheek_rgb=(150, 105, 78),
+        right_cheek_rgb=(148, 104, 77),
+        jawline_rgb=(140, 96, 72),
+    )
+
+    skin = extract_skin_tone(image, masks)
+    diagnostics = skin.patch_voting_diagnostics
+
+    assert diagnostics["used"]
+    assert "CIEDE2000 medoid" in diagnostics["consensus_method"]
+    assert diagnostics["consensus_medoid_lab"] is not None
+    assert diagnostics["outlier_threshold_delta_e"] >= 6.0
+    contributions = diagnostics["region_contributions"]
+    assert contributions.get("forehead", 0.0) <= 0.15 + 1e-6
+    assert contributions.get("jawline", 0.0) <= 0.30 + 1e-6
