@@ -144,14 +144,30 @@ def _expanded_eye_zone(landmarks, image_shape, face_width: float, face_height: f
     eye_points = _pts(landmarks, EYE_INDICES)
     if len(eye_points) < MIN_POLYGON_POINTS:
         return mask
-    x0 = int(np.clip(np.min(eye_points[:, 0]) - 0.06 * face_width, 0, w - 1))
-    x1 = int(np.clip(np.max(eye_points[:, 0]) + 0.06 * face_width, 0, w - 1))
-    y0 = int(np.clip(np.min(eye_points[:, 1]) - 0.04 * face_height, 0, h - 1))
-    # Extend below the lower eyelid so cheek pixels immediately underneath a
-    # frame or lens reflection are not treated as clean skin.
-    y1 = int(np.clip(np.max(eye_points[:, 1]) + 0.14 * face_height, 0, h - 1))
-    if x1 > x0 and y1 > y0:
-        mask[y0 : y1 + 1, x0 : x1 + 1] = 255
+    center_x = float(np.median(eye_points[:, 0]))
+    eye_groups = [
+        eye_points[eye_points[:, 0] < center_x],
+        eye_points[eye_points[:, 0] >= center_x],
+    ]
+    for group in eye_groups:
+        if len(group) < MIN_POLYGON_POINTS:
+            continue
+        x0 = int(
+            np.clip(np.min(group[:, 0]) - 0.04 * face_width, 0, w - 1)
+        )
+        x1 = int(
+            np.clip(np.max(group[:, 0]) + 0.04 * face_width, 0, w - 1)
+        )
+        y0 = int(
+            np.clip(np.min(group[:, 1]) - 0.03 * face_height, 0, h - 1)
+        )
+        # Keep a lower-lens safety margin without discarding the middle and
+        # lower cheek evidence that stabilizes depth in close phone captures.
+        y1 = int(
+            np.clip(np.max(group[:, 1]) + 0.09 * face_height, 0, h - 1)
+        )
+        if x1 > x0 and y1 > y0:
+            mask[y0 : y1 + 1, x0 : x1 + 1] = 255
     return mask
 
 

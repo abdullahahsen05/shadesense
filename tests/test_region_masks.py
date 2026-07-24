@@ -124,6 +124,7 @@ def test_capture_refinement_removes_synthetic_glasses_reflection_zone():
     assert diagnostics["eye_zone_reflection_ratio"] > 0
     assert diagnostics["eyewear_exclusion_applied"]
     assert diagnostics["eyewear_excluded_fraction"] > 0
+    assert diagnostics["eyewear_excluded_fraction"] < 0.30
     assert np.count_nonzero(refined["left_cheek"]) <= np.count_nonzero(
         masks["left_cheek"]
     )
