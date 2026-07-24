@@ -18,6 +18,7 @@ from src.face_detection import detect_face_landmarks
 from src.image_quality import analyze_image_quality
 from src.lighting_quality import analyze_lighting_quality
 from src.region_masks import build_region_masks
+from src.recommendation_readiness import build_recommendation_readiness
 from src.shade_catalog import (
     MOCK_CATALOG_KEY,
     PUBLIC_CATALOG_KEY,
@@ -169,6 +170,11 @@ if uploaded_file is not None:
             extraction_selection=extraction_selection,
             face_result=face_result,
         )
+        recommendation_readiness = build_recommendation_readiness(
+            skin_result,
+            extraction_quality_report,
+            lighting_quality,
+        )
         visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
         visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
 
@@ -277,6 +283,17 @@ if uploaded_file is not None:
             for reason in extraction_quality_report["reasons"][1:]:
                 st.caption(reason)
 
+        st.subheader("Recommendation Readiness")
+        st.markdown(
+            f"**{recommendation_readiness.state.title()} · "
+            f"{recommendation_readiness.score:.0f}/100**"
+        )
+        st.caption(recommendation_readiness.summary)
+        for reason in recommendation_readiness.reasons:
+            st.caption(reason)
+        for warning in recommendation_readiness.warnings:
+            st.warning(warning)
+
         st.subheader("Skin Extraction Summary")
         st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
 
@@ -339,6 +356,41 @@ if uploaded_file is not None:
             st.caption(f"Shadow patches rejected: {patch_diag.get('shadow_patches_rejected', 0)}")
             st.caption(f"Mid-tone patches used: {patch_diag.get('midtone_patches_used', 0)}")
             st.caption(f"Dominant/trusted region contribution: {patch_diag.get('dominant_region_contribution', 'none')}")
+            st.caption(f"Consensus method: {patch_diag.get('consensus_method', 'region fallback')}")
+            st.caption(
+                f"Perceptual outlier threshold: "
+                f"{patch_diag.get('outlier_threshold_delta_e', 0):.1f} Delta E"
+            )
+            if patch_diag.get("adaptive_patch_sizes"):
+                st.caption(
+                    "Adaptive patch sizes: "
+                    + ", ".join(str(value) for value in patch_diag["adaptive_patch_sizes"])
+                    + " px"
+                )
+            region_contributions = patch_diag.get("region_contributions", {})
+            if region_contributions:
+                st.caption(
+                    "Region contributions: "
+                    + ", ".join(
+                        f"{name.replace('_', ' ')} {value:.0%}"
+                        for name, value in region_contributions.items()
+                    )
+                )
+            uncertainty_diag = skin_result.uncertainty_diagnostics or {}
+            st.markdown("**Extraction Uncertainty**")
+            st.caption(
+                f"Bootstrap samples: {uncertainty_diag.get('bootstrap_iterations', 0)}"
+            )
+            st.caption(
+                "90th-percentile uncertainty radius: "
+                f"{uncertainty_diag.get('delta_e_radius_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                f"Bootstrap stability: {uncertainty_diag.get('stability_score', 45.0):.0f}/100"
+            )
+            if uncertainty_diag.get("l_interval_90"):
+                lower_l, upper_l = uncertainty_diag["l_interval_90"]
+                st.caption(f"90% L* interval: {lower_l:.1f}–{upper_l:.1f}")
             if patch_diag.get("fallback_reason"):
                 st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")
             stability_diag = skin_result.stability_diagnostics or {}
@@ -444,7 +496,12 @@ if uploaded_file is not None:
                     st.warning(w)
 
                 matching_lab = skin_result.foundation_target_lab if skin_result.foundation_target_active else skin_result.lab
-                matches = match_shades(np.array(matching_lab), catalog_df, top_k=TOP_K_SHADES)
+                matches = match_shades(
+                    np.array(matching_lab),
+                    catalog_df,
+                    top_k=TOP_K_SHADES,
+                    uncertainty_labs=skin_result.bootstrap_labs,
+                )
 
                 if not matches:
                     st.error("No shades available to recommend.")
@@ -458,7 +515,11 @@ if uploaded_file is not None:
                     quality_report = build_quality_report(
                         skin_result, face_result, matches, lighting_quality
                     )
-                    matches = compute_confidence(matches, quality_report)
+                    matches = compute_confidence(
+                        matches,
+                        quality_report,
+                        readiness=recommendation_readiness,
+                    )
 
                     for w in quality_report.warnings:
                         st.warning(w)
@@ -469,6 +530,10 @@ if uploaded_file is not None:
                             st.image(make_skin_swatch(match.rgb), width=150)
                             st.markdown(f"**#{match.rank}: {match.shade_name}**")
                             st.caption(f"Product: {match.product or 'unknown'}")
+                            st.caption(
+                                f"Product type: {match.product_type.replace('_', ' ')} · "
+                                f"catalog evidence {match.catalog_quality_score:.0%}"
+                            )
                             if match.product_variants:
                                 variant_products = [
                                     v.get("product")
@@ -493,6 +558,12 @@ if uploaded_file is not None:
                                     f"separation {match.confidence_breakdown['top_shade_separation_contribution']:.2f}."
                                 )
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
+                            if match.recommendation_stability is not None:
+                                st.caption(
+                                    f"Bootstrap stability: Top 1 {match.recommendation_stability:.0%} · "
+                                    f"Top 3 {match.top3_stability:.0%} · "
+                                    f"90th-percentile Delta E {match.delta_e_p90:.1f}"
+                                )
                             if match.undertone or match.depth:
                                 st.caption(
                                     f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
@@ -506,7 +577,12 @@ if uploaded_file is not None:
                             if match.depth_sanity_note:
                                 st.caption(match.depth_sanity_note)
                             explanation = build_explanation(
-                                match, skin_result, quality_report, match.rank, matches
+                                match,
+                                skin_result,
+                                quality_report,
+                                match.rank,
+                                matches,
+                                readiness=recommendation_readiness,
                             )
                             st.caption(explanation)
 else:
