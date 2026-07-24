@@ -66,7 +66,7 @@ def analyze_capture_uncertainty(
         "contrast": 2.5 * (1.0 - np.clip(contrast_score, 0.0, 1.0)),
         "color_cast": 3.0 * (1.0 - np.clip(color_score, 0.0, 1.0)),
         "pose": 4.0 * np.clip(max(pose_asymmetry - 0.10, 0.0) / 0.35, 0.0, 1.0),
-        "occlusion": 1.5
+        "occlusion": 2.5
         if capture_regions.get("eyewear_reflection_detected")
         else 0.0,
         "low_signal": 4.0 if low_signal else 0.0,

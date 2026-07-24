@@ -13,6 +13,7 @@ def _skin(
     stability: float = 80.0,
     sensitivity_score: float = 100.0,
     sensitivity_radius: float = 0.0,
+    eyewear: bool = False,
 ):
     return SimpleNamespace(
         success=True,
@@ -23,6 +24,10 @@ def _skin(
         lighting_sensitivity_diagnostics={
             "score": sensitivity_score,
             "delta_e_p90": sensitivity_radius,
+        },
+        capture_region_diagnostics={
+            "eyewear_reflection_detected": eyewear,
+            "eyewear_exclusion_applied": eyewear,
         },
     )
 
@@ -106,6 +111,29 @@ def test_small_sensitivity_change_does_not_create_three_delta_e_state_cliff():
 
     assert below.state == above.state == "ready"
     assert abs(below.confidence_cap - above.confidence_cap) < 0.02
+
+
+def test_detected_eyewear_reduces_readiness_without_hiding_results():
+    clean = build_recommendation_readiness(
+        _skin(3.0, 92.0, sensitivity_score=90.0, sensitivity_radius=2.0),
+        {"overall_score": 85.0},
+        _lighting(0.85),
+    )
+    eyewear = build_recommendation_readiness(
+        _skin(
+            3.0,
+            92.0,
+            sensitivity_score=90.0,
+            sensitivity_radius=2.0,
+            eyewear=True,
+        ),
+        {"overall_score": 85.0},
+        _lighting(0.85),
+    )
+
+    assert eyewear.score == clean.score - 4.0
+    assert eyewear.confidence_cap <= clean.confidence_cap
+    assert any("Glasses/reflection" in reason for reason in eyewear.reasons)
 
 
 def test_provisional_state_caps_match_confidence_but_keeps_match():

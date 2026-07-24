@@ -122,12 +122,27 @@ def test_capture_refinement_removes_synthetic_glasses_reflection_zone():
 
     assert diagnostics["eyewear_reflection_detected"]
     assert diagnostics["eye_zone_reflection_ratio"] > 0
+    assert diagnostics["eyewear_exclusion_applied"]
+    assert diagnostics["eyewear_excluded_fraction"] > 0
     assert np.count_nonzero(refined["left_cheek"]) <= np.count_nonzero(
         masks["left_cheek"]
     )
     assert np.count_nonzero(refined["right_cheek"]) <= np.count_nonzero(
         masks["right_cheek"]
     )
+
+
+def test_capture_refinement_does_not_flag_unmodified_face_as_eyewear():
+    image = _load("face_astronaut.png")
+    result = detect_face_landmarks(image)
+    masks = build_region_masks(image.shape, result.landmarks)
+
+    _, diagnostics = refine_masks_for_capture(
+        image, masks, result.landmarks
+    )
+
+    assert not diagnostics["eyewear_reflection_detected"]
+    assert not diagnostics["eyewear_exclusion_applied"]
 
 
 def test_capture_refinement_reduces_one_cheek_for_angled_pose():

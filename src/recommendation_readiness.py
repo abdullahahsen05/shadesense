@@ -39,6 +39,12 @@ def build_recommendation_readiness(
     sensitivity_radius = float(sensitivity.get("delta_e_p90", 0.0))
     success = bool(getattr(skin_result, "success", False))
     low_signal = bool(getattr(lighting_quality, "low_signal", False))
+    capture_regions = (
+        getattr(skin_result, "capture_region_diagnostics", {}) or {}
+    )
+    eyewear_detected = bool(
+        capture_regions.get("eyewear_reflection_detected", False)
+    )
     rank_score = 100.0
     bootstrap_family_top3 = 1.0
     lighting_family_top3 = 1.0
@@ -88,6 +94,8 @@ def build_recommendation_readiness(
             100.0,
         )
     )
+    if eyewear_detected:
+        combined = max(combined - 4.0, 0.0)
     reasons = [
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
@@ -96,6 +104,10 @@ def build_recommendation_readiness(
         f"Shade-family ranking stability {rank_score:.0f}/100.",
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
+    if eyewear_detected:
+        reasons.append(
+            "Glasses/reflection risk reduced readiness after upper-cheek exclusion."
+        )
 
     if low_signal:
         return RecommendationReadiness(

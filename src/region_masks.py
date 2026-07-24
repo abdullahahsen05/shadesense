@@ -147,10 +147,110 @@ def _expanded_eye_zone(landmarks, image_shape, face_width: float, face_height: f
     x0 = int(np.clip(np.min(eye_points[:, 0]) - 0.06 * face_width, 0, w - 1))
     x1 = int(np.clip(np.max(eye_points[:, 0]) + 0.06 * face_width, 0, w - 1))
     y0 = int(np.clip(np.min(eye_points[:, 1]) - 0.04 * face_height, 0, h - 1))
-    y1 = int(np.clip(np.max(eye_points[:, 1]) + 0.10 * face_height, 0, h - 1))
+    # Extend below the lower eyelid so cheek pixels immediately underneath a
+    # frame or lens reflection are not treated as clean skin.
+    y1 = int(np.clip(np.max(eye_points[:, 1]) + 0.14 * face_height, 0, h - 1))
     if x1 > x0 and y1 > y0:
         mask[y0 : y1 + 1, x0 : x1 + 1] = 255
     return mask
+
+
+def _eyewear_features(
+    image_rgb: np.ndarray,
+    landmarks,
+    face_width: float,
+    face_height: float,
+) -> dict[str, float]:
+    """Measure bilateral lens color and a dark/edged glasses bridge.
+
+    Whole-band edge density was diluted by skin pixels in real phone photos.
+    Per-eye reflection evidence plus the narrow bridge between the eyes is
+    more sensitive to frames while avoiding hair and most eyebrow edges.
+    """
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    edges = cv2.Canny(gray, 40, 120)
+    eye_points = _pts(landmarks, EYE_INDICES)
+    if len(eye_points) < 6:
+        return {
+            "eye_zone_edge_density": 0.0,
+            "eye_zone_reflection_ratio": 0.0,
+            "eyewear_bridge_edge_density": 0.0,
+            "eyewear_bridge_dark_ratio": 0.0,
+        }
+
+    center_x = float(np.median(eye_points[:, 0]))
+    groups = [
+        eye_points[eye_points[:, 0] < center_x],
+        eye_points[eye_points[:, 0] >= center_x],
+    ]
+    groups = [group for group in groups if len(group) >= 3]
+    if len(groups) != 2:
+        return {
+            "eye_zone_edge_density": 0.0,
+            "eye_zone_reflection_ratio": 0.0,
+            "eyewear_bridge_edge_density": 0.0,
+            "eyewear_bridge_dark_ratio": 0.0,
+        }
+    groups.sort(key=lambda group: float(np.mean(group[:, 0])))
+
+    h, w = gray.shape
+    edge_densities = []
+    reflection_ratios = []
+    boxes = []
+    colored_glare = (
+        (hsv[:, :, 2] > 80)
+        & (hsv[:, :, 1] > 45)
+        & (hsv[:, :, 0] >= 35)
+        & (hsv[:, :, 0] <= 100)
+    )
+    neutral_glare = (hsv[:, :, 2] > 220) & (hsv[:, :, 1] < 70)
+    for group in groups:
+        x0 = int(np.clip(np.min(group[:, 0]) - 0.025 * face_width, 0, w - 1))
+        x1 = int(np.clip(np.max(group[:, 0]) + 0.025 * face_width, 0, w - 1))
+        y0 = int(np.clip(np.min(group[:, 1]) - 0.015 * face_height, 0, h - 1))
+        y1 = int(np.clip(np.max(group[:, 1]) + 0.08 * face_height, 0, h - 1))
+        boxes.append((x0, x1, y0, y1))
+        zone = np.zeros(gray.shape, dtype=bool)
+        if x1 > x0 and y1 > y0:
+            zone[y0 : y1 + 1, x0 : x1 + 1] = True
+        if not np.any(zone):
+            edge_densities.append(0.0)
+            reflection_ratios.append(0.0)
+            continue
+        edge_densities.append(float(np.mean(edges[zone] > 0)))
+        reflection_ratios.append(
+            float(np.mean((colored_glare | neutral_glare)[zone]))
+        )
+
+    left_box, right_box = boxes
+    bridge_x0 = left_box[1]
+    bridge_x1 = right_box[0]
+    bridge_y0 = max(left_box[2], right_box[2])
+    bridge_y1 = min(left_box[3], right_box[3])
+    bridge_edge_density = 0.0
+    bridge_dark_ratio = 0.0
+    if bridge_x1 > bridge_x0 and bridge_y1 > bridge_y0:
+        bridge_gray = gray[
+            bridge_y0 : bridge_y1 + 1, bridge_x0 : bridge_x1 + 1
+        ]
+        bridge_edges = edges[
+            bridge_y0 : bridge_y1 + 1, bridge_x0 : bridge_x1 + 1
+        ]
+        if bridge_gray.size:
+            bridge_dark_ratio = float(np.mean(bridge_gray < 85))
+            # A thin frame bridge can occupy only one or two rows, so use the
+            # strongest horizontal edge row rather than diluting it over skin.
+            bridge_edge_density = float(
+                np.max(np.mean(bridge_edges > 0, axis=1))
+            )
+
+    return {
+        "eye_zone_edge_density": float(np.mean(edge_densities)),
+        "eye_zone_reflection_ratio": float(np.max(reflection_ratios)),
+        "eyewear_bridge_edge_density": bridge_edge_density,
+        "eyewear_bridge_dark_ratio": bridge_dark_ratio,
+    }
 
 
 def refine_masks_for_capture(
@@ -172,6 +272,10 @@ def refine_masks_for_capture(
         "eyewear_reflection_detected": False,
         "eye_zone_edge_density": 0.0,
         "eye_zone_reflection_ratio": 0.0,
+        "eyewear_bridge_edge_density": 0.0,
+        "eyewear_bridge_dark_ratio": 0.0,
+        "eyewear_exclusion_applied": False,
+        "eyewear_excluded_fraction": 0.0,
         "pose_reduced_region": None,
         "warnings": [],
     }
@@ -184,44 +288,59 @@ def refine_masks_for_capture(
     eye_zone = _expanded_eye_zone(landmarks, image_rgb.shape, face_width, face_height)
     zone_pixels = eye_zone > 0
     if np.any(zone_pixels):
-        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-        hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
-        edges = cv2.Canny(gray, 60, 150)
-        edge_density = float(np.mean(edges[zone_pixels] > 0))
-        value = hsv[:, :, 2]
-        saturation = hsv[:, :, 1]
-        neutral_glare = (value > 205) & (saturation < 100)
-        colored_glare = (
-            (value > 135)
-            & (saturation > 45)
-            & (hsv[:, :, 0] >= 30)
-            & (hsv[:, :, 0] <= 105)
+        features = _eyewear_features(
+            image_rgb, landmarks, face_width, face_height
         )
-        reflection_ratio = float(
-            np.mean((neutral_glare | colored_glare)[zone_pixels])
+        edge_density = features["eye_zone_edge_density"]
+        reflection_ratio = features["eye_zone_reflection_ratio"]
+        bridge_edge_density = features["eyewear_bridge_edge_density"]
+        bridge_dark_ratio = features["eyewear_bridge_dark_ratio"]
+        bridge_frame = (
+            bridge_edge_density > 0.075 and bridge_dark_ratio > 0.04
+        )
+        reflective_lenses = (
+            reflection_ratio > 0.035 and edge_density > 0.05
+            and bridge_edge_density > 0.055
+            and bridge_dark_ratio > 0.015
         )
         eyewear_detected = bool(
-            edge_density > 0.075
-            and (reflection_ratio > 0.012 or edge_density > 0.14)
+            bridge_frame or reflective_lenses
         )
         diagnostics.update(
             {
                 "eyewear_reflection_detected": eyewear_detected,
                 "eye_zone_edge_density": edge_density,
                 "eye_zone_reflection_ratio": reflection_ratio,
+                "eyewear_bridge_edge_density": bridge_edge_density,
+                "eyewear_bridge_dark_ratio": bridge_dark_ratio,
             }
         )
         if eyewear_detected:
             keep = cv2.bitwise_not(eye_zone)
+            original_pixels = 0
+            retained_pixels = 0
             for name in ("left_cheek", "right_cheek"):
+                original_count = np.count_nonzero(refined[name])
                 candidate = cv2.bitwise_and(refined[name], keep)
-                if np.count_nonzero(candidate) >= 0.45 * max(
-                    np.count_nonzero(refined[name]), 1
-                ):
+                candidate_count = np.count_nonzero(candidate)
+                original_pixels += original_count
+                if candidate_count >= 0.35 * max(original_count, 1):
                     refined[name] = candidate
+                    retained_pixels += candidate_count
+                else:
+                    retained_pixels += original_count
+            excluded_fraction = 1.0 - (
+                retained_pixels / max(original_pixels, 1)
+            )
+            diagnostics["eyewear_excluded_fraction"] = float(
+                np.clip(excluded_fraction, 0.0, 1.0)
+            )
+            diagnostics["eyewear_exclusion_applied"] = bool(
+                excluded_fraction > 0.005
+            )
             diagnostics["warnings"].append(
-                "Eyewear edges or lens reflections were detected; upper-cheek "
-                "pixels near the frames were excluded."
+                "Glasses frames or lens reflections were detected; upper-cheek "
+                "pixels underneath and beside the lenses were excluded."
             )
 
     if pose_asymmetry is not None and pose_asymmetry > 0.18 and len(points) > 263:
