@@ -876,3 +876,26 @@ def test_bootstrap_uncertainty_is_deterministic_and_tracks_patch_spread():
     assert stable == stable_again
     assert varied["delta_e_radius_p90"] > stable["delta_e_radius_p90"]
     assert varied["stability_score"] < stable["stability_score"]
+
+
+def test_foundation_target_shift_is_capped_for_light_medium_skin():
+    cheek = (200, 160, 130)
+    image, masks = _synthetic_scene(
+        forehead_rgb=cheek,
+        left_cheek_rgb=cheek,
+        right_cheek_rgb=cheek,
+        jawline_rgb=(175, 135, 105),
+    )
+    image[0:20, :] = (245, 235, 225)
+    image[30:50, 0:25] = (245, 235, 225)
+    image[30:50, 50:75] = (245, 235, 225)
+
+    skin = extract_skin_tone(image, masks)
+    diagnostics = skin.foundation_target_diagnostics
+
+    assert skin.depth_estimate == "light-medium"
+    assert skin.foundation_target_active
+    assert diagnostics["criteria"]["lower_face_reliable"]
+    assert diagnostics["maximum_l_adjustment"] == 3.0
+    assert diagnostics["l_adjustment"] <= 3.0
+    assert "cheek-derived undertone was preserved" in skin.foundation_target_reason

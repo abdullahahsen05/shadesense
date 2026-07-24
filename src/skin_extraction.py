@@ -1532,8 +1532,9 @@ def _build_foundation_target(
     target_lab_tuple = tuple(target_lab.tolist())
     target_rgb = _lab_to_rgb_tuple(target_lab)
     reason = (
-        "Foundation target was adjusted slightly deeper because highlight influence was detected "
-        "and lower-cheek/jawline patches supported a deeper base tone."
+        f"Foundation target L* was adjusted slightly deeper by {supported_shift:.1f} because highlight "
+        "influence was detected and at least two agreeing lower-face regions supported "
+        "a deeper base tone; cheek-derived undertone was preserved."
     )
     diagnostics.update(
         {
