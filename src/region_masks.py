@@ -123,6 +123,20 @@ def _side_jaw_mask(
     return _mask_from_points(points, image_shape)
 
 
+def _inset_region_mask(mask: np.ndarray, face_width: float, strength: float = 0.006) -> np.ndarray:
+    """Inset mask boundaries using a face-relative margin.
+
+    Landmark polygons can touch hair, facial-feature, or background edges.
+    A small scale-aware erosion is more consistent than a fixed pixel margin
+    across phone images of different resolutions.
+    """
+    radius = int(np.clip(round(face_width * strength), 1, 5))
+    kernel_size = radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    eroded = cv2.erode(mask, kernel, iterations=1)
+    return eroded if np.any(eroded) else mask
+
+
 def build_region_masks(image_shape, landmarks) -> dict:
     """Build cheek, forehead, and jawline masks from face landmarks.
 
@@ -174,7 +188,7 @@ def build_region_masks(image_shape, landmarks) -> dict:
     # the temples/hairline sides, stays on bare forehead skin for the vast
     # majority of hairstyles.
     forehead_bottom_y = eyebrow_y - margin_h
-    forehead_top_y_bound = eyebrow_y - 0.32 * face_height
+    forehead_top_y_bound = eyebrow_y - 0.28 * face_height
     forehead_left_x = face_center_x - 0.30 * face_width
     forehead_right_x = face_center_x + 0.30 * face_width
     forehead_rect_pts = np.array(
@@ -242,14 +256,32 @@ def build_region_masks(image_shape, landmarks) -> dict:
         if len(pts) >= MIN_POLYGON_POINTS:
             hull = cv2.convexHull(pts.astype(np.int32))
             cv2.fillConvexPoly(exclude_mask, hull, 255)
-    # Dilate the exclusion zone slightly for a safety margin.
-    exclude_mask = cv2.dilate(exclude_mask, np.ones((5, 5), np.uint8), iterations=1)
+    # Dilate the exclusion zone by a face-relative margin for consistent
+    # feature avoidance at different input resolutions.
+    exclude_radius = int(np.clip(round(face_width * 0.012), 2, 7))
+    exclude_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (exclude_radius * 2 + 1, exclude_radius * 2 + 1),
+    )
+    exclude_mask = cv2.dilate(exclude_mask, exclude_kernel, iterations=1)
     keep_mask = cv2.bitwise_not(exclude_mask)
 
-    forehead_mask = cv2.bitwise_and(forehead_mask, keep_mask)
-    left_cheek_mask = cv2.bitwise_and(left_cheek_mask, keep_mask)
-    right_cheek_mask = cv2.bitwise_and(right_cheek_mask, keep_mask)
-    jawline_mask = cv2.bitwise_and(jawline_mask, keep_mask)
+    forehead_mask = cv2.bitwise_and(
+        _inset_region_mask(forehead_mask, face_width, strength=0.008),
+        keep_mask,
+    )
+    left_cheek_mask = cv2.bitwise_and(
+        _inset_region_mask(left_cheek_mask, face_width),
+        keep_mask,
+    )
+    right_cheek_mask = cv2.bitwise_and(
+        _inset_region_mask(right_cheek_mask, face_width),
+        keep_mask,
+    )
+    jawline_mask = cv2.bitwise_and(
+        _inset_region_mask(jawline_mask, face_width, strength=0.005),
+        keep_mask,
+    )
 
     combined = forehead_mask | left_cheek_mask | right_cheek_mask | jawline_mask
 

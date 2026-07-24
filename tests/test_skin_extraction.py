@@ -264,6 +264,8 @@ def test_asymmetric_cheek_valid_area_warns_without_excluding_cheeks():
     assert any("cheek area imbalance" in w.lower() for w in skin.warnings)
     assert skin.region_results["left_cheek"].excluded is False
     assert skin.region_results["right_cheek"].excluded is False
+    assert skin.region_results["right_cheek"].weight_multiplier < 1.0
+    assert "pose or partial visibility" in skin.region_results["right_cheek"].downweight_reason
 
 
 def test_best_patch_extraction_rejects_noisy_high_variance_patches():

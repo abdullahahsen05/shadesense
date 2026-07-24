@@ -57,6 +57,8 @@ FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
 # rather than removes — its weight in the final combination.
 JAWLINE_DOWNWEIGHT_FACTOR = 0.35
 CHEEK_AREA_IMBALANCE_WARNING_RATIO = 0.45
+CHEEK_FORESHORTENED_AREA_RATIO = 0.55
+CHEEK_FORESHORTENED_WEIGHT = 0.68
 
 
 @dataclass
@@ -607,6 +609,35 @@ def _cheek_area_balance(region_results: dict) -> tuple[float, str | None]:
             f"than the {larger_name}. Confidence is reduced slightly, but both cheeks remain usable."
         )
     return balance, None
+
+
+def _apply_cheek_visibility_weights(region_results: dict) -> list[str]:
+    """Reduce a geometrically foreshortened cheek without excluding it.
+
+    Total mask area is used rather than color, so valid darker skin is never
+    treated as pose contamination merely because it has lower luminance.
+    """
+    left = region_results.get("left_cheek")
+    right = region_results.get("right_cheek")
+    if left is None or right is None:
+        return []
+    larger = max(left.total_pixel_count, right.total_pixel_count)
+    if larger < MIN_VALID_PIXELS_PER_REGION:
+        return []
+    smaller = left if left.total_pixel_count < right.total_pixel_count else right
+    area_ratio = smaller.total_pixel_count / max(larger, 1)
+    if area_ratio >= CHEEK_FORESHORTENED_AREA_RATIO or not smaller.reliable:
+        return []
+    smaller.weight_multiplier *= CHEEK_FORESHORTENED_WEIGHT
+    reason = (
+        f"{smaller.name.replace('_', ' ').title()} mask area is only {area_ratio:.0%} "
+        "of the opposite cheek, consistent with pose or partial visibility; "
+        "it remains included with reduced influence."
+    )
+    smaller.downweight_reason = (
+        f"{smaller.downweight_reason} {reason}" if smaller.downweight_reason else reason
+    )
+    return [reason]
 
 
 def _jawline_has_contamination_concern(jawline: RegionSkinResult) -> bool:
@@ -1289,6 +1320,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     reliable_by_name = {name: r for name, r in region_results.items() if r.reliable}
     warnings.extend(_apply_forehead_and_jawline_rules(reliable_by_name))
+    warnings.extend(_apply_cheek_visibility_weights(region_results))
     cheek_area_balance, cheek_area_warning = _cheek_area_balance(region_results)
     if cheek_area_warning:
         warnings.append(cheek_area_warning)
