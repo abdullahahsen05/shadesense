@@ -48,10 +48,13 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
    glossy highlights could bias rich/deep skin recommendations too light.
 8. Six conservative exposure, white-balance, and gamma perturbations test whether
    extraction and shade rankings remain stable under plausible capture variation.
-9. The target color is matched against the selected local catalog using CIEDE2000
+9. Capture-level uncertainty separately models global exposure, asymmetry,
+   color-cast, pose, and eyewear risks that patch bootstrap cannot observe.
+10. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space, with metadata affecting only close ties.
-10. The app always shows visually distinct Top 3 candidates with readiness-aware
-   confidence, uncertainty diagnostics, and reasoning.
+11. Readiness incorporates post-match exact-SKU and shade-family stability.
+12. The app always shows visually distinct Top 3 candidates with readiness-aware
+    confidence, uncertainty diagnostics, and reasoning.
 
 ## Project Structure
 
@@ -71,12 +74,15 @@ src/                   # CV and matching logic
   image_quality.py
   skin_extraction.py
   extraction_quality.py
+  capture_uncertainty.py
+  multicapture_consensus.py
   shade_catalog.py
   shade_matcher.py
   confidence.py
   explanation.py
   visualization.py
 scripts/
+  evaluate_repeatability.py
   prepare_public_catalog.py
 tests/
 docs/
@@ -92,10 +98,27 @@ image upload
 -> adaptive skin-pixel filtering
 -> adaptive patch extraction and perceptual medoid consensus
 -> deterministic bootstrap uncertainty
+-> systematic capture uncertainty
 -> optional depth-safe foundation target adjustment
 -> CIEDE2000 shade matching with uncertainty and catalog evidence
+-> post-match shade-family stability and readiness
 -> Top 3 recommendations, readiness-aware confidence, and explanations
 ```
+
+## Multi-Capture Repeatability
+
+For a stronger evaluation than one-photo patch consistency, run the same person
+through several independent captures:
+
+```bash
+python scripts/evaluate_repeatability.py "C:\path\to\capture-folder" --pattern "Image_*.jpeg"
+```
+
+The evaluator does not copy or commit the photographs. It reports per-capture
+Lab estimates, low-signal/recapture flags, combined uncertainty, a weighted
+CIEDE2000 medoid, whole-photo outliers, and between-capture repeatability. The
+consensus uses an actual retained observation rather than synthesizing a skin
+color between incompatible captures.
 
 ## Shade Catalog
 
