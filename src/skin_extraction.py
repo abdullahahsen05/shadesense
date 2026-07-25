@@ -46,20 +46,22 @@ MAKEUP_DOWNWEIGHT_FACTOR = 0.75
 FOREHEAD_HIGHLIGHT_DOWNWEIGHT_FACTOR = 0.18
 LOW_RELIABILITY_DOWNWEIGHT_FACTOR = 0.7
 REGION_RELIABILITY_THRESHOLD = 0.45
-JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
 JAWLINE_HIGH_LAB_STD = 7.0
 JAWLINE_LOW_VALID_RATIO = 0.45
+JAWLINE_CHEEK_SUPPORT_DELTA_E = 8.0
+JAWLINE_CHEEK_UNDERTONE_SUPPORT = 6.0
+JAWLINE_UNSUPPORTED_WEIGHT = 0.12
 
 # Forehead is useful but optional: if it disagrees strongly with the cheek
 # tone (full Lab distance), it is excluded outright — likely hair/fringe or
 # shadow contamination rather than skin.
 FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
 
-# Jawline is never excluded outright, but facial hair or chin/neck shadow
-# tends to make it specifically darker (not just differently colored) than
-# the cheeks, so a lightness (L*) gap beyond this threshold reduces —
-# rather than removes — its weight in the final combination.
-JAWLINE_DOWNWEIGHT_FACTOR = 0.35
+# Side-jaw evidence is supporting evidence. It receives material influence
+# only when it agrees with a cheek or provides clean, compatible undertone
+# evidence for naturally darker lower-face depth. Historically this block
+# described all darker jaw pixels as useful; manual captures showed why the
+# central chin and uncorroborated side-jaw colors need stricter treatment.
 CHEEK_AREA_IMBALANCE_WARNING_RATIO = 0.45
 CHEEK_FORESHORTENED_AREA_RATIO = 0.55
 CHEEK_FORESHORTENED_WEIGHT = 0.68
@@ -575,16 +577,58 @@ def _both_cheeks_agree(reliable_by_name: dict) -> bool:
     return _lab_distance(left.median_lab, right.median_lab) <= CHEEK_AGREEMENT_LAB_DISTANCE
 
 
+def _jawline_cheek_support(
+    jawline: RegionSkinResult,
+    reliable_by_name: dict,
+) -> tuple[bool, float, float]:
+    """Return whether a clean side-jaw observation corroborates a cheek.
+
+    A naturally darker jaw can still support depth when its a*/b* undertone
+    agrees with a cheek. Central chin pixels are not part of the mask.
+    """
+    comparisons = []
+    for name in CHEEK_NAMES:
+        cheek = reliable_by_name.get(name)
+        if cheek is None or cheek.median_lab is None:
+            continue
+        full_delta = _lab_distance(jawline.median_lab, cheek.median_lab)
+        undertone_delta = float(
+            np.linalg.norm(
+                np.asarray(jawline.median_lab[1:3], dtype=np.float64)
+                - np.asarray(cheek.median_lab[1:3], dtype=np.float64)
+            )
+        )
+        darker_compatible_depth = (
+            float(jawline.median_lab[0]) <= float(cheek.median_lab[0])
+            and undertone_delta <= JAWLINE_CHEEK_UNDERTONE_SUPPORT
+        )
+        comparisons.append(
+            (
+                full_delta <= JAWLINE_CHEEK_SUPPORT_DELTA_E
+                or darker_compatible_depth,
+                full_delta,
+                undertone_delta,
+            )
+        )
+    if not comparisons:
+        return False, float("inf"), float("inf")
+    return (
+        any(item[0] for item in comparisons),
+        min(item[1] for item in comparisons),
+        min(item[2] for item in comparisons),
+    )
+
+
 def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     """Mutate forehead/jawline RegionSkinResults in place against the cheek
     anchor color, and return any resulting warning strings.
 
     - Forehead: excluded outright if it disagrees strongly with the cheek
       tone (likely hair/fringe or shadow contamination).
-    - Jawline: never excluded, but its combination weight is reduced when
-      it is specifically darker than the cheeks (possible chin/neck shadow,
-      contour, occlusion, or uneven lighting), since a jawline that is off-color in other ways
-      may still carry useful skin-tone signal.
+    - Side jawline: material weight is allowed only when it agrees with at
+      least one cheek in full color, or when a clean darker observation has
+      compatible cheek undertone. Otherwise it remains diagnostic evidence
+      with minimal influence.
 
     No-ops (returns no warnings) if no cheek region is reliable, since
     there is then no trustworthy anchor to compare against.
@@ -645,13 +689,25 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
         delta_e = _lab_distance(jawline.median_lab, anchor_lab)
         darkness_gap = anchor_lab[0] - jawline.median_lab[0]
         contamination_concern = _jawline_has_contamination_concern(jawline)
-        if delta_e > JAWLINE_QUALITY_DELTA_E_THRESHOLD and contamination_concern:
-            jawline.weight_multiplier = JAWLINE_DOWNWEIGHT_FACTOR
+        cheek_supported, nearest_cheek_delta, undertone_delta = (
+            _jawline_cheek_support(jawline, reliable_by_name)
+        )
+        if contamination_concern or not cheek_supported:
+            jawline.weight_multiplier = min(
+                jawline.weight_multiplier,
+                JAWLINE_UNSUPPORTED_WEIGHT,
+            )
+            support_text = (
+                "contamination signals were present"
+                if contamination_concern
+                else "it did not agree with either cheek"
+            )
             jawline.downweight_reason = (
                 f"Jawline differs from cheek tone (Delta E {delta_e:.1f}, L difference {darkness_gap:.1f}); "
-                "its weight in the final estimate was reduced because contamination signals were present "
-                "(possible chin/neck shadow, "
-                "contour, occlusion, or uneven lighting)."
+                f"its influence was reduced to diagnostic-only support because {support_text}. "
+                f"Nearest cheek Delta E was {nearest_cheek_delta:.1f} and undertone difference "
+                f"was {undertone_delta:.1f} (possible chin/neck shadow, contour, "
+                "occlusion, or uneven lighting)."
             )
             warnings.append(jawline.downweight_reason)
 
@@ -664,7 +720,11 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
                 continue
             dist = _lab_distance(region.median_lab, anchor_lab)
             if dist > OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE:
-                if name == JAWLINE_NAME and not _jawline_has_contamination_concern(region):
+                if (
+                    name == JAWLINE_NAME
+                    and not _jawline_has_contamination_concern(region)
+                    and _jawline_cheek_support(region, reliable_by_name)[0]
+                ):
                     continue
                 region.weight_multiplier *= 0.5
                 reason = (
@@ -853,7 +913,10 @@ def _assign_region_quality(region_results: dict, reliable_by_name: dict) -> None
                 if region.weight_multiplier >= 0.75 and not region.excluded:
                     reasons.append("Jawline/lower-cheek area supports shade depth when clean.")
                 else:
-                    reasons.append("Jawline is reduced only because contamination signals were present.")
+                    reasons.append(
+                        "Side-jaw evidence was reduced because it was contaminated "
+                        "or did not corroborate either cheek."
+                    )
             elif region.name == FOREHEAD_NAME:
                 reasons.append("Forehead is treated as supporting evidence when reliable.")
 
@@ -1007,7 +1070,17 @@ def _foundation_target_lab_from_patches(candidates: list[dict], kept_indices: li
     depth_indices = [
         idx
         for idx in kept_indices
-        if candidates[idx]["region"] in {*CHEEK_NAMES, JAWLINE_NAME} and candidates[idx]["midtone"]
+        if candidates[idx]["region"] in {*CHEEK_NAMES, JAWLINE_NAME}
+        and candidates[idx]["midtone"]
+        and (
+            candidates[idx]["region"] != JAWLINE_NAME
+            or (
+                candidates[idx]["region_result"].weight_multiplier >= 0.75
+                and not _jawline_has_contamination_concern(
+                    candidates[idx]["region_result"]
+                )
+            )
+        )
     ]
     if len(depth_indices) >= 2:
         depth_labs = np.stack([candidates[idx]["lab"] for idx in depth_indices])
@@ -1122,7 +1195,14 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
     for idx, candidate in enumerate(candidates):
         distance = float(distances[idx])
         candidate_threshold = outlier_threshold
-        if candidate["region"] == JAWLINE_NAME and candidate["midtone"]:
+        if (
+            candidate["region"] == JAWLINE_NAME
+            and candidate["midtone"]
+            and candidate["region_result"].weight_multiplier >= 0.75
+            and not _jawline_has_contamination_concern(
+                candidate["region_result"]
+            )
+        ):
             candidate_threshold = min(outlier_threshold + 8.0, 22.0)
         if distance > candidate_threshold:
             diagnostics["outlier_patches_rejected"] += 1
@@ -1311,24 +1391,46 @@ def _stability_label(score: float) -> str:
     return "poor"
 
 
-def _region_stability_summary(label: str, most_influential_region: str | None) -> str:
-    if label in {"excellent", "good"}:
-        return (
-            f"Region stability was {label}; removing any one trusted region did not "
-            "significantly change the final tone."
-        )
+def _region_stability_summary(
+    label: str,
+    most_influential_region: str | None,
+    support_mode: str = "agreement",
+    contribution: float = 0.0,
+) -> str:
     region_text = (
         most_influential_region.replace("_", " ").title()
         if most_influential_region
         else "one region"
     )
+    if support_mode == "limited_independent_support":
+        return (
+            f"Independent region support was limited: {region_text} supplied "
+            f"{contribution:.0%} of retained patch influence while other regions "
+            "were reduced. This is limited corroboration, not direct evidence "
+            "that trusted regions contradict one another."
+        )
+    if support_mode == "contradictory":
+        return (
+            f"Region stability was {label}; trusted regions disagreed and removing "
+            f"{region_text} caused the largest leave-one-region-out color change, "
+            "so confidence was reduced."
+        )
+    if label in {"excellent", "good"}:
+        return (
+            f"Region stability was {label}; removing any one trusted region did not "
+            "significantly change the final tone."
+        )
     return (
         f"Region stability was {label}; removing {region_text} caused the "
         "largest leave-one-region-out color change, so confidence was reduced."
     )
 
 
-def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> dict:
+def _analyze_region_stability(
+    combination_regions: list,
+    final_lab: tuple,
+    region_contributions: dict | None = None,
+) -> dict:
     diagnostics = {
         "stability_score": 100.0,
         "stability_label": "excellent",
@@ -1337,6 +1439,9 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
         "leave_one_out_delta_e": {},
         "warnings": [],
         "reasons": [],
+        "support_mode": "agreement",
+        "region_contributions": {},
+        "influence_adjusted_leave_one_out_delta_e": {},
         "summary": "Region stability was excellent; removing any one trusted region did not significantly change the final tone.",
     }
     if len(combination_regions) < 3:
@@ -1362,15 +1467,84 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
     if not deltas:
         return diagnostics
 
+    contributions = {
+        region.name: float((region_contributions or {}).get(region.name, 0.0))
+        for region in combination_regions
+    }
+    if sum(contributions.values()) <= 0:
+        fallback_weights = {
+            region.name: (
+                region.valid_pixel_count
+                * region.weight_multiplier
+                * _region_base_weight(region.name)
+            )
+            for region in combination_regions
+        }
+        total = sum(fallback_weights.values()) or 1.0
+        contributions = {
+            name: float(value / total)
+            for name, value in fallback_weights.items()
+        }
+    adjusted_deltas = {
+        name: float(delta * max(1.0 - contributions.get(name, 0.0), 0.35))
+        for name, delta in deltas.items()
+    }
     max_delta = max(deltas.values())
     avg_delta = float(np.mean(list(deltas.values())))
     most_influential_region = max(deltas, key=deltas.get)
-    unstable_regions = [name for name, delta in deltas.items() if delta >= 8.0]
-    score = float(np.clip(100.0 - max_delta * 5.5 - avg_delta * 1.5, 0.0, 100.0))
+    dominant_contribution = contributions.get(most_influential_region, 0.0)
+    left = next(
+        (region for region in combination_regions if region.name == "left_cheek"),
+        None,
+    )
+    right = next(
+        (region for region in combination_regions if region.name == "right_cheek"),
+        None,
+    )
+    trusted_cheeks_disagree = bool(
+        left is not None
+        and right is not None
+        and left.weight_multiplier >= 0.65
+        and right.weight_multiplier >= 0.65
+        and contributions.get(left.name, 0.0) >= 0.25
+        and contributions.get(right.name, 0.0) >= 0.25
+        and _lab_distance(left.median_lab, right.median_lab)
+        > CHEEK_AGREEMENT_LAB_DISTANCE
+    )
+    if trusted_cheeks_disagree:
+        support_mode = "contradictory"
+        scoring_deltas = deltas
+    elif max_delta >= 8.0 and dominant_contribution >= 0.40:
+        support_mode = "limited_independent_support"
+        scoring_deltas = adjusted_deltas
+    else:
+        support_mode = "agreement"
+        scoring_deltas = adjusted_deltas
+    scoring_max = max(scoring_deltas.values())
+    scoring_avg = float(np.mean(list(scoring_deltas.values())))
+    unstable_regions = [
+        name for name, delta in scoring_deltas.items() if delta >= 8.0
+    ]
+    score = float(
+        np.clip(
+            100.0 - scoring_max * 5.5 - scoring_avg * 1.5,
+            0.0,
+            100.0,
+        )
+    )
     label = _stability_label(score)
-    summary = _region_stability_summary(label, most_influential_region)
+    summary = _region_stability_summary(
+        label,
+        most_influential_region,
+        support_mode=support_mode,
+        contribution=dominant_contribution,
+    )
     warnings = []
-    if unstable_regions or label in {"fair", "poor"}:
+    if (
+        unstable_regions
+        or label in {"fair", "poor"}
+        or support_mode == "limited_independent_support"
+    ):
         warnings.append(summary)
 
     diagnostics.update(
@@ -1380,10 +1554,17 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
             "most_influential_region": most_influential_region,
             "unstable_regions": unstable_regions,
             "leave_one_out_delta_e": {name: round(delta, 2) for name, delta in deltas.items()},
+            "influence_adjusted_leave_one_out_delta_e": {
+                name: round(delta, 2)
+                for name, delta in adjusted_deltas.items()
+            },
+            "support_mode": support_mode,
+            "region_contributions": contributions,
             "warnings": warnings,
             "reasons": [
                 f"Maximum leave-one-region-out shift was {max_delta:.1f} Delta E.",
                 f"Average leave-one-region-out shift was {avg_delta:.1f} Delta E.",
+                f"Influence-adjusted maximum shift was {scoring_max:.1f} Delta E.",
             ],
             "summary": summary,
         }
@@ -1406,7 +1587,13 @@ def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict
         region = region_results.get(name)
         if region is None or not region.reliable or region.excluded or region.median_lab is None:
             continue
-        if name == JAWLINE_NAME and _jawline_has_contamination_concern(region):
+        if (
+            name == JAWLINE_NAME
+            and (
+                _jawline_has_contamination_concern(region)
+                or region.weight_multiplier < 0.75
+            )
+        ):
             continue
         labs = [
             np.array(lab, dtype=np.float64)
@@ -1637,9 +1824,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     shadow/highlight luminance extremes and extreme-saturation pixels, then
     takes the median RGB/Lab. Cheeks anchor the trust check: forehead is
     excluded outright if it disagrees strongly with the cheeks (likely
-    hair/shadow contamination); jawline is down-weighted, not excluded,
-    when it is specifically darker than the cheeks (possible chin/neck shadow,
-    contour, occlusion, or uneven lighting). The remaining (non-excluded) reliable regions are
+    hair/shadow contamination); side-jaw evidence receives material weight
+    only when it corroborates a cheek in color or clean undertone/depth.
+    The remaining (non-excluded) reliable regions are
     combined, weighted by valid pixel count and any down-weighting, into
     one final skin color.
     """
@@ -1726,7 +1913,14 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     )
     if foundation_target_active:
         warnings.append(foundation_target_reason)
-    stability_diagnostics = _analyze_region_stability(combination_regions, final_lab)
+    stability_diagnostics = _analyze_region_stability(
+        combination_regions,
+        final_lab,
+        region_contributions=patch_voting_diagnostics.get(
+            "region_contributions",
+            {},
+        ),
+    )
     warnings.extend(stability_diagnostics.get("warnings", []))
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)

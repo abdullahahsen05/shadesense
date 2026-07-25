@@ -74,6 +74,9 @@ def test_jawline_mask_avoids_central_chin_region():
     face_center_x = np.mean([p[0] for p in result.landmarks])
     central = np.abs(xs - face_center_x) < img.shape[1] * 0.04
     assert central.mean() < 0.20
+    face_width = np.ptp([p[0] for p in result.landmarks])
+    broad_central = np.abs(xs - face_center_x) < face_width * 0.18
+    assert broad_central.mean() < 0.35
 
 
 def test_masks_align_across_pose_and_lighting_variants():

@@ -109,8 +109,10 @@ def _side_jaw_mask(
     sign = -1.0 if side == "left" else 1.0
     mid_y = (upper_y + lower_y) / 2.0
     outer_x = _x_at_y(oval_pts, mid_y, side, face_center_x + sign * 0.44 * face_width)
-    inner_upper_x = face_center_x + sign * 0.26 * face_width
-    inner_lower_x = face_center_x + sign * 0.20 * face_width
+    # Keep the band lateral. Moving the lower inner edge toward the centre
+    # reintroduces the central chin, lip shadow, and beard-growth zone.
+    inner_upper_x = face_center_x + sign * 0.28 * face_width
+    inner_lower_x = face_center_x + sign * 0.24 * face_width
     points = np.array(
         [
             [inner_upper_x, upper_y],
@@ -490,8 +492,11 @@ def build_region_masks(image_shape, landmarks) -> dict:
     # under-mouth convex hull could pick up neck shadow or the central chin
     # crease. These side bands prefer lower-cheek/side-jaw skin and leave the
     # central chin area out unless future explicit landmarks justify it.
-    jaw_upper_y = mouth_top_y + 0.04 * face_height
-    jaw_lower_y = min(mouth_bottom_y + 0.10 * face_height, chin_y - 0.08 * face_height)
+    jaw_upper_y = mouth_bottom_y + 0.025 * face_height
+    jaw_lower_y = min(
+        mouth_bottom_y + 0.11 * face_height,
+        chin_y - 0.09 * face_height,
+    )
     if jaw_lower_y > jaw_upper_y:
         jawline_mask = cv2.bitwise_or(
             _side_jaw_mask(oval_pts, face_center_x, face_width, jaw_upper_y, jaw_lower_y, "left", image_shape),

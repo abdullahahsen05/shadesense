@@ -8,6 +8,7 @@ from src.config import PROJECT_ROOT
 from src.face_detection import detect_face_landmarks
 from src.region_masks import build_region_masks
 from src.skin_extraction import (
+    JAWLINE_UNSUPPORTED_WEIGHT,
     MIN_VALID_PIXELS_PER_REGION,
     RegionSkinResult,
     _aggregate_patch_candidates,
@@ -209,11 +210,31 @@ def test_jawline_downweighted_when_contains_shadow_patches():
     skin = extract_skin_tone(image, masks)
 
     jawline = skin.region_results["jawline"]
-    assert jawline.weight_multiplier < 1.0
+    assert jawline.weight_multiplier <= 0.12
     assert jawline.role == "reduced"
     assert jawline.downweight_reason is not None
     assert "chin/neck shadow, contour, occlusion, or uneven lighting" in jawline.downweight_reason
     assert "facial hair" not in jawline.downweight_reason.lower()
+
+
+def test_off_undertone_jawline_is_diagnostic_only_even_without_large_variance():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=(170, 95, 120),
+    )
+
+    skin = extract_skin_tone(image, masks)
+    jawline = skin.region_results["jawline"]
+
+    assert jawline.weight_multiplier <= 0.12
+    assert jawline.role == "reduced"
+    assert "did not agree with either cheek" in jawline.downweight_reason
+    assert skin.patch_voting_diagnostics["region_contributions"].get(
+        "jawline",
+        0.0,
+    ) < 0.10
 
 
 def test_clean_cheek_region_quality_beats_highlight_contaminated_cheek():
@@ -676,27 +697,48 @@ def test_stable_regions_produce_high_region_stability_score():
     assert "removing any one trusted region" in stability["summary"]
 
 
-def test_outlier_region_lowers_stability_and_identifies_most_influential_region():
+def test_outlier_jawline_is_reduced_before_it_can_create_false_instability():
     image, masks = _synthetic_scene(
         forehead_rgb=HAIR_CONTAMINATED_FOREHEAD_RGB,
         left_cheek_rgb=CHEEK_RGB,
         right_cheek_rgb=CHEEK_RGB,
-        jawline_rgb=(90, 55, 38),
+        jawline_rgb=(170, 95, 120),
     )
     skin = extract_skin_tone(image, masks)
     stability = skin.stability_diagnostics
 
-    assert stability["stability_score"] < 50
-    assert stability["stability_label"] in {"fair", "poor"}
+    jawline = skin.region_results["jawline"]
+    assert jawline.weight_multiplier <= JAWLINE_UNSUPPORTED_WEIGHT
+    assert stability["stability_score"] >= 50
     assert stability["most_influential_region"] == max(
         stability["leave_one_out_delta_e"],
         key=stability["leave_one_out_delta_e"].get,
     )
-    assert "largest leave-one-region-out color change" in stability["summary"]
-    assert "stronger influence" not in stability["summary"]
-    assert stability["unstable_regions"]
-    assert any("region stability was" in warning.lower() for warning in skin.warnings)
-    assert any("confidence was reduced" in reason.lower() for reason in skin.extraction_quality_reasons)
+    assert (
+        "diagnostic-only support" in jawline.downweight_reason
+        or "did not corroborate" in " ".join(jawline.quality_reasons)
+    )
+
+
+def test_dominant_clean_cheek_reports_limited_support_not_contradiction():
+    image, masks = _synthetic_scene(
+        forehead_rgb=(225, 190, 170),
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=(245, 220, 205),
+        jawline_rgb=(185, 145, 122),
+    )
+    masks["right_cheek"][:, 62:] = 0
+
+    skin = extract_skin_tone(image, masks)
+    stability = skin.stability_diagnostics
+
+    assert stability["support_mode"] in {
+        "limited_independent_support",
+        "agreement",
+    }
+    if stability["support_mode"] == "limited_independent_support":
+        assert "not direct evidence" in stability["summary"]
+    assert "influence_adjusted_leave_one_out_delta_e" in stability
 
 
 def test_region_reliability_score_reflects_patch_and_valid_pixel_quality():
