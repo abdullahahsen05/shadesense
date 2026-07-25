@@ -154,7 +154,8 @@ validation images. The harness calls the same shared analysis function as the
 app and saves restartable records, subgroup metrics, charts, Markdown, and HTML.
 See `docs/evaluation_methodology.md` for dataset licenses, split rules, commands,
 and the strict boundary between robustness evidence and physical product-match
-accuracy.
+accuracy. The completed baseline/candidate measurements and presentation
+artifact index are recorded in `docs/evaluation_results.md`.
 
 ## Shade Catalog
 
