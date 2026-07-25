@@ -92,7 +92,9 @@ def create_charts(
         if available:
             ax.boxplot(
                 [item[1] for item in available],
-                labels=[item[0].replace("_", " ") for item in available],
+                tick_labels=[
+                    item[0].replace("_", " ") for item in available
+                ],
                 showfliers=False,
             )
             ax.axhline(3.0, color="#E1A95F", linestyle="--", linewidth=1)
