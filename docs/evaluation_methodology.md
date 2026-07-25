@@ -104,6 +104,25 @@ python scripts/evaluate_dataset.py `
   --save-overlays
 ```
 
+For a faster local run on a multi-core machine, the deterministic shard wrapper
+uses the same evaluator in separate processes and merges rows back into frozen
+manifest order:
+
+```powershell
+python scripts/evaluate_dataset_parallel.py `
+  --dataset-root "C:\Users\abdul\Desktop\shadesense-datasets" `
+  --manifest data/evaluation/benchmark_manifest.csv `
+  --output outputs/evaluation/v2-color-catalog `
+  --run-label v2-color-catalog `
+  --product-scope foundation_only `
+  --workers 3 `
+  --resume `
+  --save-overlays
+```
+
+Each worker is independently restartable. The merged run records the parent
+manifest and catalog hashes, Git commit, process count, and elapsed time.
+
 ## Readiness calibration
 
 Readiness thresholds are selected from clear MST-E development labels only.
