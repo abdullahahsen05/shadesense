@@ -6,7 +6,10 @@ import numpy as np
 import pandas as pd
 from skimage.color import deltaE_ciede2000
 
-from src.multi_photo_consensus import consensus_from_labs
+from src.multicapture_consensus import (
+    CaptureEvidence,
+    build_multicapture_consensus,
+)
 
 
 LAB_COLUMNS = ["matching_lab_l", "matching_lab_a", "matching_lab_b"]
@@ -66,7 +69,32 @@ def build_multi_photo_repeatability(records: pd.DataFrame) -> pd.DataFrame:
             0.05,
             1.0,
         ).to_numpy()
-        consensus = consensus_from_labs(labs, weights)
+        captures = [
+            CaptureEvidence(
+                capture_id=str(index),
+                lab=tuple(float(value) for value in labs[index]),
+                extraction_score=float(extraction.iloc[index]),
+                lighting_score=float(lighting.iloc[index] / 100.0),
+                uncertainty_radius=float(
+                    pd.to_numeric(
+                        inputs.iloc[index].get(
+                            "capture_uncertainty_delta_e_p90",
+                            6.0,
+                        ),
+                        errors="coerce",
+                    )
+                    or 6.0
+                ),
+                low_signal=str(
+                    inputs.iloc[index].get("lighting_low_signal", False)
+                ).lower()
+                in ("true", "1"),
+            )
+            for index in range(len(inputs))
+        ]
+        consensus = build_multicapture_consensus(captures)
+        if not consensus.success:
+            continue
         reference_lab = reference[LAB_COLUMNS].to_numpy(dtype=np.float64)
         consensus_distance = float(
             deltaE_ciede2000(
@@ -88,9 +116,9 @@ def build_multi_photo_repeatability(records: pd.DataFrame) -> pd.DataFrame:
                     inputs["benchmark_id"].astype(str)
                 ),
                 "input_count": int(len(inputs)),
-                "retained_count": int(len(consensus.retained_indices)),
-                "rejected_count": int(len(consensus.rejected_indices)),
-                "agreement_delta_e_p90": consensus.agreement_delta_e_p90,
+                "retained_count": int(len(consensus.included_capture_ids)),
+                "rejected_count": int(len(consensus.excluded_capture_ids)),
+                "agreement_delta_e_p90": consensus.uncertainty_radius_p90,
                 "consensus_to_reference_delta_e": consensus_distance,
                 "individual_to_reference_median_delta_e": float(
                     np.median(individual_distances)
