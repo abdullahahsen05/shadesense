@@ -7,6 +7,7 @@ outputs/debug/*
 !outputs/debug/.gitkeep
 outputs/evaluation/*
 !outputs/evaluation/.gitkeep
+outputs/*.log
 .streamlit/
 *.egg-info/
 .DS_Store

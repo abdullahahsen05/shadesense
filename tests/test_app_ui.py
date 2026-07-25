@@ -57,7 +57,10 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     )
     assert "internal region/pixel score" in page_text
     assert "Stability summary:" in page_text
-    assert "Jawline reduction reason:" in page_text
+    assert (
+        "Side-jaw reduction reason:" in page_text
+        or "Side-jaw status:" in page_text
+    )
     assert "Final depth estimate:" in page_text
     assert "Color Correction Diagnostics" in page_text
     assert "Selected extraction source:" in page_text

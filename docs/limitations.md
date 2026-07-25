@@ -13,7 +13,7 @@
   attempt to let the user choose which face to analyze.
 
 ## Region masks
-- Forehead/cheek/jawline masks are derived geometrically from landmark
+- Forehead/cheek/side-jaw masks are derived geometrically from landmark
   groups (face oval, eyes, eyebrows, lips, nose) rather than hand-tuned
   per-region polygons, so they generalize reasonably across face shapes and
   poses but are not pixel-perfect for every hairstyle or face angle.
@@ -21,14 +21,19 @@
   region toward hair color. `src/skin_extraction.py` treats the cheeks as
   the trust anchor (least likely to be occluded by hair or facial-hair
   shadow): forehead is excluded outright when it disagrees strongly with
-  the cheek tone (likely hair/fringe or shadow), and jawline is
-  down-weighted (not excluded) when it is specifically darker than the
-  cheeks (possible facial hair or chin shadow). This requires at least one
+  the cheek tone (likely hair/fringe or shadow). Jaw evidence is handled by
+  the side-jaw corroboration rules below. This requires at least one
   reliable cheek region to act as the anchor — with neither cheek usable,
   these checks are skipped entirely (no anchor to compare against).
-- No explicit handling for glasses or heavy occlusion beyond what the
-  region geometry and the forehead/jawline trust-anchor logic naturally
-  mitigate.
+- Side-jaw evidence receives material influence only when it corroborates a
+  cheek in full color or supplies clean darker depth with compatible
+  undertone. Otherwise it is reduced to diagnostic-only influence.
+- The central area under the lips is intentionally excluded from the jaw mask.
+  It is especially vulnerable to lip shadow, moustache/beard growth, chin
+  curvature, contour, and under-chin illumination.
+- Glasses/reflection detection excludes a conservative upper-cheek lens band
+  and reduces readiness. It is heuristic, so rimless glasses, weak reflections,
+  or unusual frames may still evade detection.
 
 ## Skin tone extraction
 - Uses percentile-based luminance/saturation filtering rather than a full
@@ -37,6 +42,9 @@
 - Mild color correction (gray-world + light CLAHE) is intentionally
   conservative; it does not correct strong color casts (e.g. colored indoor
   lighting) beyond a moderate amount.
+- Automatic correction is rejected when its extracted skin color crosses
+  conservative lightness or undertone limits, including a dedicated guard
+  against brightening already-highlighted facial regions.
 - Bootstrap intervals quantify disagreement between retained patches, but they
   are internal resampling uncertainty rather than calibrated real-world error
   bounds. Dataset validation with measured skin color is still required.
@@ -49,6 +57,13 @@
   against an array of catalog Lab colors — `src/shade_matcher.py` explicitly
   tiles the skin color before calling it (covered by a regression test in
   `tests/test_shade_matcher.py`).
+
+- Recommendations present perceptually distinct shade families first. Exact
+  product stability remains separate because multiple website-derived swatches
+  can represent essentially the same Lab color.
+- Public website swatches are not measurements of dried-down product on skin.
+  Family grouping can expose ambiguity, but it cannot physically calibrate one
+  brand's swatch against another.
 
 ## Confidence
 - Confidence is a heuristic, interpretable combination of match distance,

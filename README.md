@@ -37,10 +37,10 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 1. Upload one facial photo, or two to three independent photos for consensus.
    An optional neutral gray-card reference can provide explicit white balance.
 2. The app detects the face and MediaPipe face landmarks.
-3. Cheek, forehead, and jawline masks are extracted while avoiding eyes, lips,
-   eyebrows, hairline, and under-chin shadow where possible.
+3. Cheek, forehead, and side-jaw masks are extracted while avoiding eyes, lips,
+   eyebrows, hairline, central chin, and under-chin shadow where possible.
 4. Face-aware lighting diagnostics measure the actual forehead, cheek, and
-   jawline regions instead of the image background.
+   side-jaw regions instead of the image background.
 5. A representative skin color is computed from adaptive diffuse patches using
    a CIEDE2000 medoid, robust outlier rejection, and bounded region influence.
 6. Deterministic patch bootstrapping quantifies extraction uncertainty; central,
@@ -54,6 +54,8 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 10. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space, with metadata affecting only close ties.
 11. Readiness incorporates post-match exact-SKU and shade-family stability.
+    Perceptually near-equivalent catalog colors are grouped so distinct shade
+    families appear before duplicate-looking products in the Top 3.
 12. With multiple photos, each capture is analyzed independently; a weighted
     CIEDE2000 medoid rejects a gross whole-photo outlier and anchors consensus
     to a real retained observation.
@@ -105,7 +107,7 @@ image upload
 -> optional neutral-card channel calibration
 -> lighting and capture-quality diagnostics
 -> MediaPipe face detection and landmarks
--> cheek / forehead / jawline masks
+-> cheek / forehead / side-jaw masks
 -> adaptive skin-pixel filtering
 -> adaptive patch extraction and perceptual medoid consensus
 -> deterministic bootstrap uncertainty

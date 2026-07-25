@@ -24,6 +24,17 @@ adding a shade classifier or another face model.
   metadata completeness describe evidence quality, not physical product color.
 - Readiness states always retain Top 3 recommendations while limiting
   confidence for weak evidence.
+- Automatic correction is rejected when highlighted facial skin would be
+  brightened by more than 3 L*, total skin lightness would shift by more than
+  8 L*, or the extracted a*/b* undertone would shift by more than 7 units.
+- Jaw evidence is limited to lateral side-jaw bands. A clean darker side jaw
+  can support depth when it corroborates a cheek; off-undertone or contaminated
+  jaw evidence is retained only as a diagnostic with minimal influence.
+- Leave-one-region-out diagnostics distinguish limited independent support
+  from genuine disagreement between trusted cheeks.
+- Near-equivalent catalog colors are grouped into perceptual shade families
+  after exact-product stability is measured. This improves Top-3 diversity
+  without inflating certainty in a particular SKU.
 
 ## Readiness thresholds
 

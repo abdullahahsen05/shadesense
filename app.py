@@ -304,6 +304,17 @@ if uploaded_files:
         visual_source_label = analysis.visual_source_label
 
         with st.expander("Lighting correction notes"):
+            st.caption(
+                f"Automatic extraction source: "
+                f"{extraction_selection.selected_source}."
+            )
+            st.caption(
+                f"Correction candidate shift: "
+                f"{extraction_selection.lightness_shift:+.1f} L* and "
+                f"{extraction_selection.undertone_shift:.1f} a*/b* units."
+            )
+            for flag in extraction_selection.safety_flags:
+                st.warning(flag)
             for note in correction_notes:
                 st.caption(note)
 
@@ -347,7 +358,8 @@ if uploaded_files:
             overlay = draw_face_landmarks(visualization_rgb, face_result.landmarks)
             caption = (
                 f"{len(face_result.landmarks)} landmarks | displayed on {visual_source_label}. "
-                "Face detection used the corrected preview only for landmark stability."
+                "This is a diagnostic overlay; the extraction-source decision is "
+                "reported separately below."
             )
             st.image(overlay, caption=caption, width=400)
             st.caption(f"Landmark visualization source: displayed on {visual_source_label}.")
@@ -535,7 +547,18 @@ if uploaded_files:
                 st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
             st.caption(f"RGB difference: {extraction_selection.rgb_difference:.1f}")
             st.caption(f"Lab difference: {extraction_selection.lab_difference:.1f}")
+            st.caption(
+                f"Lightness shift: {extraction_selection.lightness_shift:+.1f} L*"
+            )
+            st.caption(
+                "Undertone shift: "
+                f"{extraction_selection.undertone_shift:.1f} a*/b* units"
+            )
             st.caption(f"Chroma preservation score: {extraction_selection.chroma_preservation_score:.0%}")
+            if extraction_selection.safety_flags:
+                st.markdown("**Correction safety guard**")
+                for flag in extraction_selection.safety_flags:
+                    st.warning(flag)
 
         with st.expander("Region color diagnostics"):
             st.caption("Region color diagnostics")
@@ -618,17 +641,35 @@ if uploaded_files:
             st.caption(f"Region stability score: {stability_diag.get('stability_score', 0):.0f}/100")
             st.caption(f"Region stability label: {stability_diag.get('stability_label', 'unknown')}")
             st.caption(
+                "Region support mode: "
+                f"{str(stability_diag.get('support_mode', 'agreement')).replace('_', ' ')}"
+            )
+            st.caption(
                 "Most sensitive leave-one-out region: "
                 f"{str(stability_diag.get('most_influential_region', 'none')).replace('_', ' ').title()}"
             )
             st.caption(f"Stability summary: {stability_diag.get('summary', 'not available')}")
             leave_one_out = stability_diag.get("leave_one_out_delta_e", {})
+            adjusted_leave_one_out = stability_diag.get(
+                "influence_adjusted_leave_one_out_delta_e",
+                {},
+            )
+            region_contributions = stability_diag.get(
+                "region_contributions",
+                {},
+            )
             if leave_one_out:
                 st.table(
                     [
                         {
                             "Left out region": name.replace("_", " ").title(),
-                            "Delta E shift": f"{delta:.2f}",
+                            "Retained influence": (
+                                f"{region_contributions.get(name, 0.0):.0%}"
+                            ),
+                            "Raw Delta E shift": f"{delta:.2f}",
+                            "Influence-adjusted shift": (
+                                f"{adjusted_leave_one_out.get(name, delta):.2f}"
+                            ),
                         }
                         for name, delta in leave_one_out.items()
                     ]
@@ -655,9 +696,15 @@ if uploaded_files:
                         st.caption(f"Shadow/highlight ratio: {region.shadow_highlight_ratio:.0%}")
                         if region_name == "jawline":
                             if region.weight_multiplier < 1.0:
-                                st.caption(f"Jawline reduction reason: {region.downweight_reason}")
+                                st.caption(
+                                    "Side-jaw reduction reason: "
+                                    f"{region.downweight_reason}"
+                                )
                             else:
-                                st.caption("Jawline reduction reason: not reduced; reliable depth support.")
+                                st.caption(
+                                    "Side-jaw status: not reduced; clean evidence "
+                                    "corroborated cheek tone/depth."
+                                )
                         if region.makeup_influence_detected:
                             st.caption("possible makeup/highlight influence detected.")
                         if region.specular_highlight_detected:
@@ -756,6 +803,25 @@ if uploaded_files:
                                         "Also available in: "
                                         + ", ".join(unique_variant_products[:3])
                                     )
+                            if match.shade_family_size > 1:
+                                family_alternatives = (
+                                    match.shade_family_alternatives or []
+                                )
+                                alternative_labels = [
+                                    f"{item.get('brand', 'Unknown')} "
+                                    f"{item.get('shade_name', 'Unknown')}"
+                                    for item in family_alternatives[:3]
+                                ]
+                                st.caption(
+                                    f"Perceptual shade family: "
+                                    f"{match.shade_family_size} near-equivalent "
+                                    "catalog colors."
+                                )
+                                if alternative_labels:
+                                    st.caption(
+                                        "Closest family alternatives: "
+                                        + ", ".join(alternative_labels)
+                                    )
                             st.caption(f"{match.brand} · {match.hex}")
                             st.metric("Match confidence", f"{match.confidence:.0%}")
                             if match.confidence_breakdown:
@@ -799,6 +865,34 @@ if uploaded_files:
                                     f"lighting Top 1 {match.lighting_family_stability:.0%} · "
                                     f"Top 3 {match.lighting_top3_family_stability:.0%}."
                                 )
+                                exact_scores = [
+                                    score
+                                    for score in (
+                                        match.recommendation_stability,
+                                        match.lighting_recommendation_stability,
+                                    )
+                                    if score is not None
+                                ]
+                                family_scores = [
+                                    score
+                                    for score in (
+                                        match.recommendation_family_stability,
+                                        match.lighting_family_stability,
+                                    )
+                                    if score is not None
+                                ]
+                                if (
+                                    exact_scores
+                                    and family_scores
+                                    and min(exact_scores) < 0.50
+                                    and max(family_scores) >= 0.65
+                                ):
+                                    st.warning(
+                                        "The color family is more stable than the "
+                                        "exact product. Treat this SKU as one "
+                                        "candidate within a near-equivalent shade "
+                                        "family, not as a uniquely verified product."
+                                    )
                             if match.undertone or match.depth:
                                 st.caption(
                                     f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
