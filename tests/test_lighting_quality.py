@@ -147,6 +147,23 @@ def test_near_black_clipping_in_a_cheek_is_low_signal():
     assert result.low_signal
 
 
+def test_extremely_dark_face_regions_remain_provisional_without_clipping():
+    image = np.full((100, 140, 3), 40, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+
+    result = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert result.face_black_clip_ratio == 0.0
+    assert result.underexposed
+    assert result.low_signal
+
+
 def test_continuous_lighting_subscores_distinguish_severity():
     left = np.zeros((100, 140), dtype=np.uint8)
     right = np.zeros_like(left)

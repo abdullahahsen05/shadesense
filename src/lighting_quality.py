@@ -158,7 +158,9 @@ def analyze_lighting_quality(
             ),
             default=black_clip_ratio,
         )
-        underexposed = cheek_black_clip_evidence > 0.10 and p95 < 100
+        underexposed = (
+            cheek_black_clip_evidence > 0.10 and p95 < 100
+        ) or (p50 < 45 and p95 < 105)
     else:
         underexposed = mean_luma < 70 or p75 < 85
     overexposed = mean_luma > 205 or p25 > 185
