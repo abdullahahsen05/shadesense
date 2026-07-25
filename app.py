@@ -6,10 +6,15 @@ This module contains presentation logic only. CV/matching logic lives in `src/`.
 import numpy as np
 import streamlit as st
 from src.analysis_pipeline import analyze_rgb_image
+from src.color_calibration import (
+    apply_neutral_card_calibration,
+    estimate_neutral_card_calibration,
+)
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.extraction_summary import build_skin_extraction_summary
 from src.image_io import open_rgb_image_with_metadata
+from src.multi_photo_consensus import build_multi_photo_consensus
 from src.shade_catalog import (
     ALL_BASE_SCOPE,
     FOUNDATION_ONLY_SCOPE,
@@ -113,25 +118,152 @@ st.caption(
 )
 extraction_mode = "auto"
 
-uploaded_file = st.file_uploader(
-    "Upload a facial image", type=["jpg", "jpeg", "png", "bmp"]
+uploaded_files = st.file_uploader(
+    "Upload one to three facial images",
+    type=["jpg", "jpeg", "png", "bmp"],
+    accept_multiple_files=True,
+    key="face-photos",
 )
 
-if uploaded_file is not None:
-    image, image_color_metadata = open_rgb_image_with_metadata(uploaded_file)
-    image_rgb = np.array(image)
-    analysis = analyze_rgb_image(
-        image_rgb,
-        recommendation_catalog_df,
-        extraction_mode=extraction_mode,
-        top_k=TOP_K_SHADES,
-        image_color_metadata=image_color_metadata.as_dict(),
+with st.expander("Optional neutral-card calibration"):
+    st.caption(
+        "For controlled capture, photograph a neutral gray card in the same "
+        "light and camera mode. Fill the centre of the reference photo with "
+        "the card; ShadeSense will use it for explicit white balance."
     )
+    neutral_card_file = st.file_uploader(
+        "Neutral gray-card reference",
+        type=["jpg", "jpeg", "png", "bmp"],
+        key="neutral-card",
+    )
+
+if uploaded_files:
+    if len(uploaded_files) > 3:
+        st.warning("Only the first three photos are analysed.")
+        uploaded_files = uploaded_files[:3]
+
+    calibration = None
+    if neutral_card_file is not None:
+        neutral_image, _ = open_rgb_image_with_metadata(neutral_card_file)
+        calibration = estimate_neutral_card_calibration(
+            np.asarray(neutral_image)
+        )
+        if calibration.success:
+            st.success(
+                "Neutral-card calibration active "
+                f"({calibration.confidence:.0%} quality; gains "
+                f"{tuple(round(value, 2) for value in calibration.gains)})."
+            )
+        for warning in calibration.warnings:
+            st.warning(warning)
+        if not calibration.success:
+            st.warning(
+                "The neutral reference was not reliable enough; facial photos "
+                "will be analysed without card calibration."
+            )
+
+    decoded_images = []
+    analyses = []
+    with st.spinner(f"Analysing {len(uploaded_files)} photo(s)..."):
+        for uploaded_file in uploaded_files:
+            decoded_image, color_metadata = open_rgb_image_with_metadata(
+                uploaded_file
+            )
+            original_rgb = np.asarray(decoded_image)
+            analysis_rgb = (
+                apply_neutral_card_calibration(original_rgb, calibration)
+                if calibration is not None and calibration.success
+                else original_rgb
+            )
+            metadata = color_metadata.as_dict()
+            metadata["neutral_card_calibrated"] = bool(
+                calibration is not None and calibration.success
+            )
+            decoded_images.append(
+                (decoded_image, original_rgb, color_metadata, uploaded_file.name)
+            )
+            analyses.append(
+                analyze_rgb_image(
+                    analysis_rgb,
+                    recommendation_catalog_df,
+                    extraction_mode=extraction_mode,
+                    top_k=TOP_K_SHADES,
+                    image_color_metadata=metadata,
+                )
+            )
+
+    consensus_result = (
+        build_multi_photo_consensus(
+            analyses,
+            recommendation_catalog_df,
+            top_k=TOP_K_SHADES,
+        )
+        if len(analyses) > 1
+        else None
+    )
+    reference_index = (
+        consensus_result.reference_index
+        if consensus_result is not None
+        and consensus_result.success
+        and consensus_result.reference_index is not None
+        else 0
+    )
+    image, image_rgb, image_color_metadata, image_name = decoded_images[
+        reference_index
+    ]
+    analysis = analyses[reference_index]
+
+    if consensus_result is not None:
+        st.subheader("Multi-photo consensus")
+        if consensus_result.success:
+            st.markdown(
+                f"**{consensus_result.readiness.state.title()} | "
+                f"{len(consensus_result.retained_indices)} of "
+                f"{len(analyses)} captures retained**"
+            )
+            st.caption(consensus_result.explanation)
+            st.caption(
+                "Cross-photo agreement: "
+                f"{consensus_result.agreement_delta_e_p90:.1f} Delta E "
+                "(90th percentile)."
+            )
+            st.image(
+                make_skin_swatch(consensus_result.consensus_rgb),
+                caption=(
+                    "Consensus foundation target: RGB "
+                    f"{consensus_result.consensus_rgb}, Lab "
+                    f"{tuple(round(value, 1) for value in consensus_result.consensus_lab)}"
+                ),
+                width=150,
+            )
+            evidence_rows = [
+                {
+                    "Photo": evidence.capture_index + 1,
+                    "File": decoded_images[evidence.capture_index][3],
+                    "Included": "yes" if evidence.included else "no",
+                    "Readiness": evidence.readiness_state,
+                    "Distance from medoid": (
+                        f"{evidence.distance_from_medoid:.1f} Delta E"
+                    ),
+                    "Quality weight": f"{evidence.weight:.0%}",
+                }
+                for evidence in consensus_result.evidence
+            ]
+            st.table(evidence_rows)
+            for warning in consensus_result.warnings:
+                st.warning(warning)
+        else:
+            for warning in consensus_result.warnings:
+                st.error(warning)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Uploaded Image")
-        st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
+        st.subheader("Reference Image")
+        st.image(
+            image_rgb,
+            caption=f"{image_name} | {image.width}x{image.height}px",
+            width=400,
+        )
         if analysis.analysis_scale < 1.0:
             st.caption(
                 "CV analysis used a proportional "
@@ -166,6 +298,8 @@ if uploaded_file is not None:
         capture_uncertainty = analysis.capture_uncertainty
         extraction_quality_report = analysis.extraction_quality_report
         recommendation_readiness = analysis.recommendation_readiness
+        if consensus_result is not None and consensus_result.success:
+            recommendation_readiness = consensus_result.readiness
         visualization_rgb = analysis.visualization_rgb
         visual_source_label = analysis.visual_source_label
 
@@ -579,7 +713,12 @@ if uploaded_file is not None:
                 for w in recommendation_catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
-                matches = analysis.matches
+                matches = (
+                    consensus_result.matches
+                    if consensus_result is not None
+                    and consensus_result.success
+                    else analysis.matches
+                )
 
                 if not matches:
                     st.error("No shades available to recommend.")
