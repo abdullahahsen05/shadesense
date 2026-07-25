@@ -6,10 +6,6 @@ This module contains presentation logic only. CV/matching logic lives in `src/`.
 import numpy as np
 import streamlit as st
 from src.analysis_pipeline import analyze_rgb_image
-from src.color_calibration import (
-    apply_neutral_card_calibration,
-    estimate_neutral_card_calibration,
-)
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.extraction_summary import build_skin_extraction_summary
@@ -125,42 +121,10 @@ uploaded_files = st.file_uploader(
     key="face-photos",
 )
 
-with st.expander("Optional neutral-card calibration"):
-    st.caption(
-        "For controlled capture, photograph a neutral gray card in the same "
-        "light and camera mode. Fill the centre of the reference photo with "
-        "the card; ShadeSense will use it for explicit white balance."
-    )
-    neutral_card_file = st.file_uploader(
-        "Neutral gray-card reference",
-        type=["jpg", "jpeg", "png", "bmp"],
-        key="neutral-card",
-    )
-
 if uploaded_files:
     if len(uploaded_files) > 3:
         st.warning("Only the first three photos are analysed.")
         uploaded_files = uploaded_files[:3]
-
-    calibration = None
-    if neutral_card_file is not None:
-        neutral_image, _ = open_rgb_image_with_metadata(neutral_card_file)
-        calibration = estimate_neutral_card_calibration(
-            np.asarray(neutral_image)
-        )
-        if calibration.success:
-            st.success(
-                "Neutral-card calibration active "
-                f"({calibration.confidence:.0%} quality; gains "
-                f"{tuple(round(value, 2) for value in calibration.gains)})."
-            )
-        for warning in calibration.warnings:
-            st.warning(warning)
-        if not calibration.success:
-            st.warning(
-                "The neutral reference was not reliable enough; facial photos "
-                "will be analysed without card calibration."
-            )
 
     decoded_images = []
     analyses = []
@@ -170,21 +134,14 @@ if uploaded_files:
                 uploaded_file
             )
             original_rgb = np.asarray(decoded_image)
-            analysis_rgb = (
-                apply_neutral_card_calibration(original_rgb, calibration)
-                if calibration is not None and calibration.success
-                else original_rgb
-            )
             metadata = color_metadata.as_dict()
-            metadata["neutral_card_calibrated"] = bool(
-                calibration is not None and calibration.success
-            )
+            metadata["neutral_card_calibrated"] = False
             decoded_images.append(
                 (decoded_image, original_rgb, color_metadata, uploaded_file.name)
             )
             analyses.append(
                 analyze_rgb_image(
-                    analysis_rgb,
+                    original_rgb,
                     recommendation_catalog_df,
                     extraction_mode=extraction_mode,
                     top_k=TOP_K_SHADES,

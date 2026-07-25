@@ -35,7 +35,6 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 ## Usage
 
 1. Upload one facial photo, or two to three independent photos for consensus.
-   An optional neutral gray-card reference can provide explicit white balance.
 2. The app detects the face and MediaPipe face landmarks.
 3. Cheek, forehead, and side-jaw masks are extracted while avoiding eyes, lips,
    eyebrows, hairline, central chin, and under-chin shadow where possible.
@@ -76,7 +75,6 @@ src/                   # CV and matching logic
   face_detection.py
   region_masks.py
   color_correction.py
-  color_calibration.py
   lighting_quality.py
   image_quality.py
   skin_extraction.py
@@ -104,7 +102,6 @@ docs/
 ```text
 image upload
 -> embedded ICC conversion to sRGB
--> optional neutral-card channel calibration
 -> lighting and capture-quality diagnostics
 -> MediaPipe face detection and landmarks
 -> cheek / forehead / side-jaw masks

@@ -120,6 +120,8 @@ def test_capture_guidance_text_exists():
     assert "cheeks and jawline visible" in page_text
     assert "Color handling is automatic" in page_text
     assert "preserves original image color" in page_text
+    assert len(at.file_uploader) == 1
+    assert "neutral-card" not in page_text.lower()
 
 
 def test_extraction_mode_controls_are_not_exposed_in_ui():

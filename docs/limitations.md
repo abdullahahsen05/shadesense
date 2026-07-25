@@ -83,9 +83,6 @@
 - Multi-photo consensus can reduce capture variation but cannot correct three
   consistently biased photos. Two strongly disagreeing photos remain
   provisional because neither can safely be identified as the outlier.
-- Neutral-card calibration requires a genuinely neutral card photographed with
-  the same camera settings and illumination. A screen, white paper, or a card
-  in different lighting can introduce rather than remove color error.
 - ICC conversion honors embedded profiles, but images without a profile must be
   treated as sRGB by convention.
 
