@@ -60,6 +60,9 @@ class ShadeMatch:
     delta_e_p90: float | None = None
     distribution_delta_e: float | None = None
     uncertainty_adjustment: float = 0.0
+    shade_family_id: str | None = None
+    shade_family_size: int = 1
+    shade_family_alternatives: list | None = None
 
 
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
@@ -324,6 +327,70 @@ def _group_ranked_candidates(candidates: list[ShadeMatch]) -> list[ShadeMatch]:
     return grouped_matches
 
 
+def _shade_family_payload(match: ShadeMatch) -> dict:
+    return {
+        "shade_id": match.shade_id,
+        "brand": match.brand,
+        "product": match.product,
+        "shade_name": match.shade_name,
+        "hex": match.hex,
+        "delta_e": match.delta_e,
+        "ranking_score": match.ranking_score,
+        "recommendation_stability": match.recommendation_stability,
+        "lighting_recommendation_stability": (
+            match.lighting_recommendation_stability
+        ),
+    }
+
+
+def _order_by_shade_family(candidates: list[ShadeMatch]) -> list[ShadeMatch]:
+    """Place one representative from each perceptual color family first.
+
+    Exact-product stability is calculated before this step. The family layer
+    therefore improves recommendation diversity without inflating confidence
+    in a particular catalog SKU.
+    """
+    if not candidates:
+        return []
+
+    families: list[list[ShadeMatch]] = []
+    for candidate in candidates:
+        family = next(
+            (
+                members
+                for members in families
+                if _lab_delta_e(candidate.lab, members[0].lab)
+                <= SHADE_FAMILY_DELTA_E
+            ),
+            None,
+        )
+        if family is None:
+            families.append([candidate])
+        else:
+            family.append(candidate)
+
+    representatives: list[ShadeMatch] = []
+    remaining_members: list[ShadeMatch] = []
+    for family_index, members in enumerate(families, start=1):
+        family_id = f"family-{family_index:03d}"
+        family_payloads = [_shade_family_payload(member) for member in members]
+        for member_index, member in enumerate(members):
+            member.shade_family_id = family_id
+            member.shade_family_size = len(members)
+            member.shade_family_alternatives = [
+                payload
+                for payload_index, payload in enumerate(family_payloads)
+                if payload_index != member_index
+            ]
+        representatives.append(members[0])
+        remaining_members.extend(members[1:])
+
+    # Representatives preserve original ranking order because families are
+    # opened by the best-ranked member. Remaining near-duplicates are retained
+    # as a fallback so small catalogs can still satisfy the Top-K contract.
+    return representatives + remaining_members
+
+
 def _select_visually_distinct_matches(candidates: list[ShadeMatch], top_k: int) -> list[ShadeMatch]:
     if top_k <= 0:
         return []
@@ -535,4 +602,5 @@ def match_shades(
     grouped_candidates = _group_ranked_candidates(ranked_candidates)
     _apply_uncertainty_stability(grouped_candidates, uncertainty_labs)
     _apply_lighting_stability(grouped_candidates, lighting_sensitivity_labs)
-    return _select_visually_distinct_matches(grouped_candidates, top_k)
+    family_ordered_candidates = _order_by_shade_family(grouped_candidates)
+    return _select_visually_distinct_matches(family_ordered_candidates, top_k)

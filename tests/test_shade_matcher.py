@@ -551,3 +551,43 @@ def test_nearby_products_can_have_stable_family_but_unstable_exact_sku():
     assert best.recommendation_family_stability == 1.0
     assert best.top3_family_stability == 1.0
     assert best.lighting_family_stability == 1.0
+    assert best.shade_family_size == 2
+    assert {best.shade_id, best.shade_family_alternatives[0]["shade_id"]} == {
+        "near-a",
+        "near-b",
+    }
+    assert matches[1].shade_id == "far"
+
+
+def test_shade_family_representatives_are_returned_before_near_duplicate_products():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["near-a", "near-b", "near-c", "warm", "deep"],
+            "brand": ["A", "B", "C", "D", "E"],
+            "product": ["Foundation"] * 5,
+            "shade_name": ["Near A", "Near B", "Near C", "Warm", "Deep"],
+            "hex": ["#806050", "#816151", "#826252", "#946850", "#604838"],
+            "r": [128, 129, 130, 148, 96],
+            "g": [96, 97, 98, 104, 72],
+            "b": [80, 81, 82, 80, 56],
+            "lab_l": [50.0, 50.5, 51.0, 53.0, 42.0],
+            "lab_a": [8.0, 8.0, 8.0, 13.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0, 20.0, 14.0],
+        }
+    )
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=3,
+    )
+
+    assert [match.shade_id for match in matches] == [
+        "near-a",
+        "warm",
+        "deep",
+    ]
+    assert matches[0].shade_family_size == 3
+    assert {
+        item["shade_id"] for item in matches[0].shade_family_alternatives
+    } == {"near-b", "near-c"}
