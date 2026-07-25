@@ -100,6 +100,12 @@ def main() -> int:
             "anchor_capture_id": consensus.anchor_capture_id,
             "included_capture_ids": consensus.included_capture_ids,
             "excluded_capture_ids": consensus.excluded_capture_ids,
+            "excluded_low_signal_capture_ids": (
+                consensus.excluded_low_signal_capture_ids
+            ),
+            "excluded_perceptual_outlier_capture_ids": (
+                consensus.excluded_perceptual_outlier_capture_ids
+            ),
             "delta_e_by_capture": consensus.delta_e_by_capture,
             "uncertainty_radius_p90": consensus.uncertainty_radius_p90,
             "repeatability_score": consensus.repeatability_score,

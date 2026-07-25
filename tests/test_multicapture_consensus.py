@@ -26,6 +26,9 @@ def test_consensus_rejects_dim_real_capture_pattern():
         "bright-7",
     }
     assert {"dim-3", "dim-5"} <= set(result.excluded_capture_ids)
+    assert {"dim-3", "dim-5"} <= set(
+        result.excluded_low_signal_capture_ids
+    )
     assert 70.0 <= result.lab[0] <= 78.0
     assert result.uncertainty_radius_p90 < 6.0
 

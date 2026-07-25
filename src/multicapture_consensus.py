@@ -23,6 +23,10 @@ class MultiCaptureConsensus:
     anchor_capture_id: str | None = None
     included_capture_ids: list[str] = field(default_factory=list)
     excluded_capture_ids: list[str] = field(default_factory=list)
+    excluded_low_signal_capture_ids: list[str] = field(default_factory=list)
+    excluded_perceptual_outlier_capture_ids: list[str] = field(
+        default_factory=list
+    )
     delta_e_by_capture: dict[str, float] = field(default_factory=dict)
     uncertainty_radius_p90: float = 12.0
     repeatability_score: float = 0.0
@@ -82,10 +86,12 @@ def build_multicapture_consensus(
     mad = _weighted_median(np.abs(initial_distances - distance_median), weights)
     robust_sigma = 1.4826 * mad
     threshold = max(3.0, distance_median + 2.5 * robust_sigma)
-    keep = (initial_distances <= threshold) & np.asarray(
+    perceptual_keep = initial_distances <= threshold
+    signal_keep = np.asarray(
         [not capture.low_signal for capture in usable],
         dtype=bool,
     )
+    keep = perceptual_keep & signal_keep
     if int(np.sum(keep)) < 2:
         # Low-signal flags may remove every photo in a difficult set. Keep the
         # two strongest captures, but make the weak evidence explicit.
@@ -111,6 +117,20 @@ def build_multicapture_consensus(
         for capture, is_kept in zip(usable, keep)
         if not is_kept
     ]
+    excluded_low_signal = [
+        capture.capture_id
+        for capture, is_kept, has_signal in zip(usable, keep, signal_keep)
+        if not is_kept and not has_signal
+    ]
+    excluded_perceptual = [
+        capture.capture_id
+        for capture, is_kept, is_perceptual in zip(
+            usable,
+            keep,
+            perceptual_keep,
+        )
+        if not is_kept and not is_perceptual
+    ]
     warnings = []
     if excluded:
         warnings.append(
@@ -130,6 +150,8 @@ def build_multicapture_consensus(
         anchor_capture_id=anchor.capture_id,
         included_capture_ids=[capture.capture_id for capture in kept],
         excluded_capture_ids=excluded,
+        excluded_low_signal_capture_ids=excluded_low_signal,
+        excluded_perceptual_outlier_capture_ids=excluded_perceptual,
         delta_e_by_capture={
             capture.capture_id: float(distance)
             for capture, distance in zip(usable, all_distances)

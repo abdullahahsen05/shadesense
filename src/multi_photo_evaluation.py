@@ -125,6 +125,14 @@ def build_multi_photo_repeatability(records: pd.DataFrame) -> pd.DataFrame:
                 "input_count": int(len(inputs)),
                 "retained_count": int(len(consensus.included_capture_ids)),
                 "rejected_count": int(len(consensus.excluded_capture_ids)),
+                "low_signal_rejected_count": int(
+                    len(consensus.excluded_low_signal_capture_ids)
+                ),
+                "perceptual_outlier_rejected_count": int(
+                    len(
+                        consensus.excluded_perceptual_outlier_capture_ids
+                    )
+                ),
                 "agreement_delta_e_p90": consensus.uncertainty_radius_p90,
                 "consensus_to_reference_delta_e": consensus_distance,
                 "individual_to_reference_median_delta_e": float(
@@ -164,8 +172,14 @@ def summarize_multi_photo_repeatability(frame: pd.DataFrame) -> dict:
         "subjects_improved_rate": float(
             frame["consensus_better_than_individual_median"].mean()
         ),
-        "outlier_capture_rejection_rate": float(
+        "any_capture_exclusion_rate": float(
             (frame["rejected_count"] > 0).mean()
+        ),
+        "low_signal_exclusion_rate": float(
+            (frame["low_signal_rejected_count"] > 0).mean()
+        ),
+        "perceptual_outlier_exclusion_rate": float(
+            (frame["perceptual_outlier_rejected_count"] > 0).mean()
         ),
         "method_note": (
             "Consensus inputs exclude each subject's designated usable "
