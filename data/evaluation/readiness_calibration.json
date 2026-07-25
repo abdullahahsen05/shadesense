@@ -1,0 +1,45 @@
+{
+  "evaluation_run": "v2-color-catalog",
+  "evidence": {
+    "development": {
+      "count": 67,
+      "false_ready_rate": 0.022727272727272728,
+      "false_usable_rate": 0.38636363636363635,
+      "recapture_count": 44,
+      "recapture_reject_rate": 0.6136363636363636,
+      "usable_accept_rate": 0.5652173913043478,
+      "usable_count": 23,
+      "usable_ready_rate": 0.08695652173913043
+    },
+    "locked_test": {
+      "count": 90,
+      "false_ready_rate": 0.0,
+      "false_usable_rate": 0.27586206896551724,
+      "recapture_count": 58,
+      "recapture_reject_rate": 0.7241379310344828,
+      "usable_accept_rate": 0.40625,
+      "usable_count": 32,
+      "usable_ready_rate": 0.03125
+    },
+    "note": "MST-E lighting/pose/mask labels are capture-quality proxies, not foundation product ground truth.",
+    "objective": 2.116600790513834
+  },
+  "manifest_sha256": "386cb41eef958536b36ce3ed987cd87cdde3ea117c258fb0b4b5177dc2b72717",
+  "source": "MST-E development metadata calibration",
+  "thresholds": {
+    "caution_extraction_score": 50.0,
+    "caution_max_sensitivity": 5.5,
+    "caution_max_uncertainty": 9.0,
+    "caution_min_bootstrap_family_top3": 0.35,
+    "caution_min_lighting_family_top3": 0.3,
+    "caution_score": 52.0,
+    "ready_extraction_score": 68.0,
+    "ready_lighting_score": 0.6,
+    "ready_max_sensitivity": 4.0,
+    "ready_max_uncertainty": 7.0,
+    "ready_min_bootstrap_family_top3": 0.55,
+    "ready_min_lighting_family_top3": 0.45,
+    "ready_score": 78.0,
+    "source": "MST-E development metadata calibration"
+  }
+}

@@ -36,6 +36,31 @@ def test_underexposure_warning_for_dark_image():
     assert 0 <= quality.overall_score <= 100
 
 
+def test_face_mask_prevents_dark_background_from_triggering_underexposure():
+    image = np.full((160, 160, 3), 12, dtype=np.uint8)
+    image[45:120, 50:110] = (170, 145, 125)
+    mask = np.zeros((160, 160), dtype=np.uint8)
+    mask[45:120, 50:110] = 255
+
+    quality = analyze_image_quality(image, masks={"combined": mask})
+
+    assert "Image appears underexposed." not in quality.warnings
+    assert quality.exposure_source == "facial skin regions"
+    assert quality.underexposed_ratio == 0.0
+
+
+def test_face_mask_detects_dark_face_despite_bright_background():
+    image = np.full((160, 160, 3), 180, dtype=np.uint8)
+    image[45:120, 50:110] = (15, 15, 15)
+    mask = np.zeros((160, 160), dtype=np.uint8)
+    mask[45:120, 50:110] = 255
+
+    quality = analyze_image_quality(image, masks={"combined": mask})
+
+    assert "Image appears underexposed." in quality.warnings
+    assert quality.underexposed_ratio == 1.0
+
+
 def test_strong_color_cast_warning_for_tinted_image():
     image = np.zeros((120, 120, 3), dtype=np.uint8)
     image[:, :] = (180, 80, 65)

@@ -56,10 +56,25 @@ def _patch_stability_score(skin_result) -> float:
 
 def _lighting_safety_score(lighting_quality, extraction_selection) -> float:
     lighting_score = float(getattr(lighting_quality, "score", 1.0)) * 100.0
-    chroma_score = float(getattr(extraction_selection, "chroma_preservation_score", 1.0)) * 100.0
-    lab_diff = float(getattr(extraction_selection, "lab_difference", 0.0))
-    lab_safety = _clip_score(100.0 - max(lab_diff - 4.0, 0.0) * 4.0)
     selected_source = getattr(extraction_selection, "selected_source", "original")
+    if selected_source == "original":
+        # A rejected correction is not uncertainty in the preserved pixels.
+        # Capture lighting is already represented by ``lighting_score``.
+        chroma_score = 100.0
+        lab_safety = 100.0
+    else:
+        chroma_score = (
+            float(
+                getattr(
+                    extraction_selection,
+                    "chroma_preservation_score",
+                    1.0,
+                )
+            )
+            * 100.0
+        )
+        lab_diff = float(getattr(extraction_selection, "lab_difference", 0.0))
+        lab_safety = _clip_score(100.0 - max(lab_diff - 4.0, 0.0) * 4.0)
     color_preservation_bonus = 5.0 if selected_source == "original" and lighting_score >= 85 else 0.0
     return _clip_score(0.55 * lighting_score + 0.25 * chroma_score + 0.20 * lab_safety + color_preservation_bonus)
 
@@ -103,6 +118,10 @@ def build_extraction_quality_report(
     color_consistency = _clip_score(float(getattr(skin_result, "region_consistency", 0.0)) * 100.0)
     stability_diag = getattr(skin_result, "stability_diagnostics", {}) or {}
     region_stability = _clip_score(float(stability_diag.get("stability_score", 70.0)))
+    capture_uncertainty = (
+        getattr(skin_result, "systematic_uncertainty_diagnostics", {}) or {}
+    )
+    capture_stability = _clip_score(float(capture_uncertainty.get("score", 70.0)))
 
     face_warnings = getattr(face_result, "warnings", []) if face_result is not None else []
     if face_warnings:
@@ -115,14 +134,16 @@ def build_extraction_quality_report(
         "lighting_safety": lighting_safety,
         "color_consistency": color_consistency,
         "region_stability": region_stability,
+        "capture_stability": capture_stability,
     }
     overall = _clip_score(
-        0.18 * image_capture
-        + 0.22 * region_reliability
-        + 0.18 * patch_stability
-        + 0.15 * lighting_safety
-        + 0.15 * color_consistency
-        + 0.12 * region_stability
+        0.16 * image_capture
+        + 0.20 * region_reliability
+        + 0.16 * patch_stability
+        + 0.13 * lighting_safety
+        + 0.13 * color_consistency
+        + 0.10 * region_stability
+        + 0.12 * capture_stability
     )
 
     warnings: list[str] = []
@@ -135,6 +156,7 @@ def build_extraction_quality_report(
         warnings.append("Stable patch evidence was limited; region median fallback may be less robust.")
     if color_consistency < 55:
         warnings.append("Skin regions disagreed in color, which can reduce extraction reliability.")
+    warnings.extend(capture_uncertainty.get("warnings", []))
 
     report = {
         "overall_score": overall,

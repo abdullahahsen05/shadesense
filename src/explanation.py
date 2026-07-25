@@ -11,7 +11,14 @@ def _closeness_phrase(delta_e: float) -> str:
     return "the closest available match, though not a tight one"
 
 
-def build_explanation(match, skin_result, quality_report, rank: int, matches: list) -> str:
+def build_explanation(
+    match,
+    skin_result,
+    quality_report,
+    rank: int,
+    matches: list,
+    readiness=None,
+) -> str:
     """Build a deterministic, factor-grounded explanation for one shade match.
 
     Mentions: closeness of the Lab/Delta E distance, undertone agreement,
@@ -43,6 +50,17 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
             "matching variant is shown."
         )
 
+    if getattr(match, "recommendation_stability", None) is not None:
+        parts.append(
+            f"It remained in the Top 3 for {match.top3_stability:.0%} of deterministic "
+            "patch-bootstrap samples."
+        )
+
+    if getattr(match, "catalog_quality_score", 1.0) < 0.75:
+        parts.append(
+            "Catalog metadata for this candidate is limited, so its confidence is reduced."
+        )
+
     if quality_report.region_consistency < 0.5:
         parts.append(
             "Confidence is reduced because the forehead, cheek, and jawline regions "
@@ -66,6 +84,12 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
             "is reduced slightly."
         )
 
+    if getattr(quality_report, "uncertainty_radius", 0.0) > 6.0:
+        parts.append(
+            "Patch-bootstrap uncertainty is elevated, indicating that retained facial "
+            "regions did not produce a tightly stable color estimate."
+        )
+
     if getattr(quality_report, "close_match_tie", False):
         parts.append(
             "Close match tie: these shades are nearly identical in catalog color and "
@@ -75,6 +99,12 @@ def build_explanation(match, skin_result, quality_report, rank: int, matches: li
         parts.append(
             "The top two recommendations are very close in color, so the exact ranking "
             "between them is uncertain."
+        )
+
+    if getattr(readiness, "state", "ready") == "provisional":
+        parts.append(
+            "This is a provisional candidate; retake the photo in soft, even daylight "
+            "before treating it as a dependable match."
         )
 
     return " ".join(parts)

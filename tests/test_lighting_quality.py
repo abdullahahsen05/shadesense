@@ -45,3 +45,144 @@ def test_lighting_quality_flags_broad_glossy_highlights():
     assert result.strong_highlights
     assert result.score < 1.0
     assert any("glossy shine" in warning.lower() or "highlights" in warning.lower() for warning in result.warnings)
+
+
+def test_face_region_lighting_ignores_bright_background():
+    image = np.full((120, 160, 3), 248, dtype=np.uint8)
+    image[30:100, 45:115] = (145, 105, 82)
+    mask = np.zeros((120, 160), dtype=np.uint8)
+    mask[35:95, 50:110] = 255
+    masks = {"left_cheek": mask.copy(), "right_cheek": mask.copy()}
+
+    global_quality = analyze_lighting_quality(image)
+    face_quality = analyze_lighting_quality(image, masks=masks)
+
+    assert face_quality.using_face_regions
+    assert not face_quality.overexposed
+    assert face_quality.score > global_quality.score
+    assert "facial skin regions" in face_quality.explanation
+
+
+def test_face_region_lighting_reports_asymmetric_cheeks():
+    image = np.full((100, 140, 3), 120, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[30:75, 20:60] = 255
+    right[30:75, 80:120] = 255
+    image[left > 0] = (65, 50, 45)
+    image[right > 0] = (180, 145, 125)
+
+    quality = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert quality.uneven_lighting
+    assert quality.left_right_gap > 24
+    assert set(quality.region_metrics) == {"left_cheek", "right_cheek"}
+
+
+def test_shadowed_cheek_is_low_signal_without_treating_even_deep_skin_as_bad():
+    dark_even = np.full((100, 140, 3), 55, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+
+    even = analyze_lighting_quality(
+        dark_even,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+    assert not even.low_signal
+
+    split = dark_even.copy()
+    split[left > 0] = 50
+    split[right > 0] = 145
+    uneven = analyze_lighting_quality(
+        split,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+    assert uneven.low_signal
+    assert uneven.recapture_recommended
+    assert uneven.score < even.score
+
+
+def test_dark_optional_region_does_not_force_low_signal_for_clean_cheeks():
+    image = np.full((100, 140, 3), 70, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    jawline = np.zeros_like(left)
+    left[25:70, 15:60] = 255
+    right[25:70, 80:125] = 255
+    jawline[75:95, 40:100] = 255
+    image[jawline > 0] = 8
+
+    result = analyze_lighting_quality(
+        image,
+        masks={
+            "left_cheek": left,
+            "right_cheek": right,
+            "jawline": jawline,
+        },
+    )
+
+    assert result.worst_region_shadow_ratio > 0.12
+    assert not result.low_signal
+
+
+def test_near_black_clipping_in_a_cheek_is_low_signal():
+    image = np.full((100, 140, 3), 90, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+    image[25:50, 15:60] = 5
+
+    result = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert result.face_black_clip_ratio > 0.08
+    assert result.low_signal
+
+
+def test_extremely_dark_face_regions_remain_provisional_without_clipping():
+    image = np.full((100, 140, 3), 40, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+
+    result = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert result.face_black_clip_ratio == 0.0
+    assert result.underexposed
+    assert result.low_signal
+
+
+def test_continuous_lighting_subscores_distinguish_severity():
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+    mild = np.full((100, 140, 3), 125, dtype=np.uint8)
+    severe = mild.copy()
+    mild[left > 0] = 105
+    mild[right > 0] = 145
+    severe[left > 0] = 55
+    severe[right > 0] = 200
+
+    mild_result = analyze_lighting_quality(
+        mild, masks={"left_cheek": left, "right_cheek": right}
+    )
+    severe_result = analyze_lighting_quality(
+        severe, masks={"left_cheek": left, "right_cheek": right}
+    )
+
+    assert severe_result.uniformity_score < mild_result.uniformity_score
+    assert severe_result.score < mild_result.score
+    assert "Subscores" in severe_result.explanation

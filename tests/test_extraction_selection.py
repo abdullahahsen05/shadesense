@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.color_correction import apply_mild_color_correction
 from src.extraction_selection import choose_extraction_candidate
@@ -97,3 +98,58 @@ def test_lab_chroma_shift_guard_rejects_over_corrected_skin_tone():
     assert selection.selected_source == "original"
     assert selection.lab_difference > 12.0
     assert selection.chroma_preservation_score < 0.72
+
+
+def test_highlight_aware_guard_rejects_brightening_seen_in_manual_image_one():
+    original = _result(
+        (216, 174, 150),
+        (74.2, 17.1, 18.1),
+        quality=0.69,
+        consistency=0.76,
+    )
+    corrected = _result(
+        (228, 198, 174),
+        (81.8, 7.8, 15.8),
+        quality=0.76,
+        consistency=0.88,
+    )
+    lighting = SimpleNamespace(
+        score=0.45,
+        color_cast=True,
+        strong_highlights=True,
+        face_highlight_ratio=0.03,
+    )
+
+    selection = choose_extraction_candidate(original, corrected, lighting)
+
+    assert selection.selected_source == "original"
+    assert selection.lightness_shift == pytest.approx(7.6)
+    assert selection.undertone_shift > 7.0
+    assert any("highlighted facial skin" in flag for flag in selection.safety_flags)
+    assert "safety limits" in selection.reason
+
+
+def test_safe_moderate_color_cast_correction_remains_available():
+    original = _result(
+        (207, 151, 123),
+        (67.2, 17.5, 23.7),
+        quality=0.70,
+        consistency=0.68,
+    )
+    corrected = _result(
+        (212, 167, 140),
+        (72.0, 12.7, 20.4),
+        quality=0.79,
+        consistency=0.79,
+    )
+    lighting = SimpleNamespace(
+        score=0.61,
+        color_cast=True,
+        strong_highlights=False,
+        face_highlight_ratio=0.001,
+    )
+
+    selection = choose_extraction_candidate(original, corrected, lighting)
+
+    assert selection.selected_source == "corrected"
+    assert selection.safety_flags == []

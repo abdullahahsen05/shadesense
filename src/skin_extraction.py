@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
-from skimage.color import lab2rgb, rgb2lab
+from skimage.color import deltaE_ciede2000, lab2rgb, rgb2lab
 
 from src.depth_diagnostics import build_skin_depth_diagnostic
 
@@ -24,6 +24,10 @@ OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE = 14.0
 OPTIONAL_REGION_BASE_WEIGHT = 0.55
 PATCH_SIZE = 18
 PATCH_STRIDE = 12
+MIN_ADAPTIVE_PATCH_SIZE = 12
+MAX_ADAPTIVE_PATCH_SIZE = 36
+BOOTSTRAP_ITERATIONS = 96
+BOOTSTRAP_SEED = 20260724
 MIN_VALID_PIXELS_PER_PATCH = 45
 MIN_STABLE_PATCHES_PER_REGION = 2
 MAX_STABLE_PATCHES_PER_REGION = 8
@@ -42,21 +46,49 @@ MAKEUP_DOWNWEIGHT_FACTOR = 0.75
 FOREHEAD_HIGHLIGHT_DOWNWEIGHT_FACTOR = 0.18
 LOW_RELIABILITY_DOWNWEIGHT_FACTOR = 0.7
 REGION_RELIABILITY_THRESHOLD = 0.45
-JAWLINE_QUALITY_DELTA_E_THRESHOLD = 10.0
 JAWLINE_HIGH_LAB_STD = 7.0
 JAWLINE_LOW_VALID_RATIO = 0.45
+JAWLINE_CHEEK_SUPPORT_DELTA_E = 8.0
+JAWLINE_CHEEK_UNDERTONE_SUPPORT = 6.0
+JAWLINE_UNSUPPORTED_WEIGHT = 0.12
 
 # Forehead is useful but optional: if it disagrees strongly with the cheek
 # tone (full Lab distance), it is excluded outright — likely hair/fringe or
 # shadow contamination rather than skin.
 FOREHEAD_VS_CHEEK_OUTLIER_LAB_DISTANCE = 20.0
 
-# Jawline is never excluded outright, but facial hair or chin/neck shadow
-# tends to make it specifically darker (not just differently colored) than
-# the cheeks, so a lightness (L*) gap beyond this threshold reduces —
-# rather than removes — its weight in the final combination.
-JAWLINE_DOWNWEIGHT_FACTOR = 0.35
+# Side-jaw evidence is supporting evidence. It receives material influence
+# only when it agrees with a cheek or provides clean, compatible undertone
+# evidence for naturally darker lower-face depth. Historically this block
+# described all darker jaw pixels as useful; manual captures showed why the
+# central chin and uncorroborated side-jaw colors need stricter treatment.
 CHEEK_AREA_IMBALANCE_WARNING_RATIO = 0.45
+CHEEK_FORESHORTENED_AREA_RATIO = 0.55
+CHEEK_FORESHORTENED_WEIGHT = 0.68
+REGION_CONTRIBUTION_CAPS = {
+    "left_cheek": 0.45,
+    "right_cheek": 0.45,
+    "forehead": 0.15,
+    "jawline": 0.30,
+}
+
+
+@dataclass(frozen=True)
+class SkinPatchEvidence:
+    region: str
+    rgb: tuple
+    lab: tuple
+    quality: float
+    is_midtone: bool
+    lab_std: float
+    rgb_std: float
+    luminance_median: float
+    luminance_contrast: float
+    highlight_ratio: float
+    shadow_ratio: float
+    top: int
+    left: int
+    size: int
 
 
 @dataclass
@@ -92,6 +124,7 @@ class RegionSkinResult:
     role: str = "excluded"
     quality_reasons: list = field(default_factory=list)
     quality_warnings: list = field(default_factory=list)
+    patch_evidence: list[SkinPatchEvidence] = field(default_factory=list)
     warnings: list = field(default_factory=list)
 
     @property
@@ -136,6 +169,12 @@ class SkinToneResult:
     foundation_target_active: bool = False
     foundation_target_reason: str = ""
     foundation_target_diagnostics: dict = field(default_factory=dict)
+    bootstrap_labs: list = field(default_factory=list)
+    uncertainty_diagnostics: dict = field(default_factory=dict)
+    lighting_sensitivity_labs: list = field(default_factory=list)
+    lighting_sensitivity_diagnostics: dict = field(default_factory=dict)
+    capture_region_diagnostics: dict = field(default_factory=dict)
+    systematic_uncertainty_diagnostics: dict = field(default_factory=dict)
     depth_estimate: str | None = None
     ita_degrees: float | None = None
     ita_category: str | None = None
@@ -202,6 +241,7 @@ def _filter_skin_pixels(pixels_rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]
 def _stable_patch_medians(
     image_rgb: np.ndarray,
     mask: np.ndarray,
+    region_name: str = "unknown",
     region_luminance_bounds: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, dict]:
     """Return RGB/Lab medians from the most stable patches in a mask."""
@@ -212,18 +252,31 @@ def _stable_patch_medians(
         "midtone_patch_count": 0,
         "selected_patch_quality_scores": [],
         "selected_midtone_flags": [],
+        "patch_evidence": [],
+        "patch_size": 0,
+        "patch_stride": 0,
     }
     if len(xs) == 0:
         return np.empty((0, 3)), np.empty((0, 3)), 0, stats
 
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     y0, y1 = int(ys.min()), int(ys.max()) + 1
+    patch_size = int(
+        np.clip(
+            round(np.sqrt(len(xs)) * 0.22),
+            MIN_ADAPTIVE_PATCH_SIZE,
+            MAX_ADAPTIVE_PATCH_SIZE,
+        )
+    )
+    patch_stride = max(8, int(round(patch_size * 2.0 / 3.0)))
+    stats["patch_size"] = patch_size
+    stats["patch_stride"] = patch_stride
     stable = []
 
-    for top in range(y0, max(y0 + 1, y1 - PATCH_SIZE + 1), PATCH_STRIDE):
-        for left in range(x0, max(x0 + 1, x1 - PATCH_SIZE + 1), PATCH_STRIDE):
-            patch_mask = mask[top : top + PATCH_SIZE, left : left + PATCH_SIZE]
-            patch_pixels = image_rgb[top : top + PATCH_SIZE, left : left + PATCH_SIZE][patch_mask > 0]
+    for top in range(y0, max(y0 + 1, y1 - patch_size + 1), patch_stride):
+        for left in range(x0, max(x0 + 1, x1 - patch_size + 1), patch_stride):
+            patch_mask = mask[top : top + patch_size, left : left + patch_size]
+            patch_pixels = image_rgb[top : top + patch_size, left : left + patch_size][patch_mask > 0]
             if len(patch_pixels) < MIN_VALID_PIXELS_PER_PATCH:
                 continue
 
@@ -231,6 +284,8 @@ def _stable_patch_medians(
             patch_raw_l = patch_raw_lab[:, 0]
             patch_l_median = float(np.median(patch_raw_l))
             patch_l_contrast = float(np.percentile(patch_raw_l, 95) - np.percentile(patch_raw_l, 5))
+            patch_highlight_ratio = float(np.mean(patch_raw_l > 92.0))
+            patch_shadow_ratio = float(np.mean(patch_raw_l < 12.0))
             patch_chroma = float(np.linalg.norm(np.median(patch_raw_lab, axis=0)[1:3]))
             patch_saturation = float(np.median(_to_saturation(patch_pixels)))
 
@@ -294,6 +349,14 @@ def _stable_patch_medians(
                     np.median(valid_lab, axis=0),
                     patch_quality,
                     is_midtone,
+                    patch_l_median,
+                    patch_l_contrast,
+                    patch_highlight_ratio,
+                    patch_shadow_ratio,
+                    lab_std,
+                    rgb_std,
+                    top,
+                    left,
                 )
             )
 
@@ -301,11 +364,41 @@ def _stable_patch_medians(
         return np.empty((0, 3)), np.empty((0, 3)), len(stable), stats
 
     stable.sort(key=lambda item: item[0])
-    selected = stable[:MAX_STABLE_PATCHES_PER_REGION]
+    # Keep high-quality evidence while sampling across the candidate sequence
+    # so an equally stable shadowed half cannot monopolize all retained
+    # patches merely because it was scanned first.
+    pool = stable[: min(len(stable), MAX_STABLE_PATCHES_PER_REGION * 3)]
+    selected_count = min(len(pool), MAX_STABLE_PATCHES_PER_REGION)
+    selected_indices = np.linspace(
+        0,
+        len(pool) - 1,
+        num=selected_count,
+        dtype=int,
+    )
+    selected = [pool[int(idx)] for idx in dict.fromkeys(selected_indices.tolist())]
     rgb_medians = np.stack([item[1] for item in selected])
     lab_medians = np.stack([item[2] for item in selected])
     stats["selected_patch_quality_scores"] = [item[3] for item in selected]
     stats["selected_midtone_flags"] = [item[4] for item in selected]
+    stats["patch_evidence"] = [
+        SkinPatchEvidence(
+            region=region_name,
+            rgb=tuple(np.round(item[1]).astype(int).tolist()),
+            lab=tuple(np.asarray(item[2], dtype=np.float64).tolist()),
+            quality=float(item[3]),
+            is_midtone=bool(item[4]),
+            luminance_median=float(item[5]),
+            luminance_contrast=float(item[6]),
+            highlight_ratio=float(item[7]),
+            shadow_ratio=float(item[8]),
+            lab_std=float(item[9]),
+            rgb_std=float(item[10]),
+            top=int(item[11]),
+            left=int(item[12]),
+            size=patch_size,
+        )
+        for item in selected
+    ]
     return rgb_medians, lab_medians, len(selected), stats
 
 
@@ -374,7 +467,10 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         )
 
     patch_rgb, patch_lab, stable_patch_count, patch_stats = _stable_patch_medians(
-        image_rgb, mask, region_luminance_bounds=region_luminance_bounds
+        image_rgb,
+        mask,
+        region_name=name,
+        region_luminance_bounds=region_luminance_bounds,
     )
     patch_fallback_used = len(patch_rgb) == 0
     if patch_fallback_used:
@@ -434,6 +530,7 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         highlight_patches_rejected=patch_stats["highlight_patches_rejected"],
         shadow_patches_rejected=patch_stats["shadow_patches_rejected"],
         midtone_patch_count=patch_stats["midtone_patch_count"],
+        patch_evidence=patch_stats["patch_evidence"] if not patch_fallback_used else [],
         warnings=warnings,
     )
 
@@ -480,16 +577,58 @@ def _both_cheeks_agree(reliable_by_name: dict) -> bool:
     return _lab_distance(left.median_lab, right.median_lab) <= CHEEK_AGREEMENT_LAB_DISTANCE
 
 
+def _jawline_cheek_support(
+    jawline: RegionSkinResult,
+    reliable_by_name: dict,
+) -> tuple[bool, float, float]:
+    """Return whether a clean side-jaw observation corroborates a cheek.
+
+    A naturally darker jaw can still support depth when its a*/b* undertone
+    agrees with a cheek. Central chin pixels are not part of the mask.
+    """
+    comparisons = []
+    for name in CHEEK_NAMES:
+        cheek = reliable_by_name.get(name)
+        if cheek is None or cheek.median_lab is None:
+            continue
+        full_delta = _lab_distance(jawline.median_lab, cheek.median_lab)
+        undertone_delta = float(
+            np.linalg.norm(
+                np.asarray(jawline.median_lab[1:3], dtype=np.float64)
+                - np.asarray(cheek.median_lab[1:3], dtype=np.float64)
+            )
+        )
+        darker_compatible_depth = (
+            float(jawline.median_lab[0]) <= float(cheek.median_lab[0])
+            and undertone_delta <= JAWLINE_CHEEK_UNDERTONE_SUPPORT
+        )
+        comparisons.append(
+            (
+                full_delta <= JAWLINE_CHEEK_SUPPORT_DELTA_E
+                or darker_compatible_depth,
+                full_delta,
+                undertone_delta,
+            )
+        )
+    if not comparisons:
+        return False, float("inf"), float("inf")
+    return (
+        any(item[0] for item in comparisons),
+        min(item[1] for item in comparisons),
+        min(item[2] for item in comparisons),
+    )
+
+
 def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     """Mutate forehead/jawline RegionSkinResults in place against the cheek
     anchor color, and return any resulting warning strings.
 
     - Forehead: excluded outright if it disagrees strongly with the cheek
       tone (likely hair/fringe or shadow contamination).
-    - Jawline: never excluded, but its combination weight is reduced when
-      it is specifically darker than the cheeks (possible chin/neck shadow,
-      contour, occlusion, or uneven lighting), since a jawline that is off-color in other ways
-      may still carry useful skin-tone signal.
+    - Side jawline: material weight is allowed only when it agrees with at
+      least one cheek in full color, or when a clean darker observation has
+      compatible cheek undertone. Otherwise it remains diagnostic evidence
+      with minimal influence.
 
     No-ops (returns no warnings) if no cheek region is reliable, since
     there is then no trustworthy anchor to compare against.
@@ -550,13 +689,25 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
         delta_e = _lab_distance(jawline.median_lab, anchor_lab)
         darkness_gap = anchor_lab[0] - jawline.median_lab[0]
         contamination_concern = _jawline_has_contamination_concern(jawline)
-        if delta_e > JAWLINE_QUALITY_DELTA_E_THRESHOLD and contamination_concern:
-            jawline.weight_multiplier = JAWLINE_DOWNWEIGHT_FACTOR
+        cheek_supported, nearest_cheek_delta, undertone_delta = (
+            _jawline_cheek_support(jawline, reliable_by_name)
+        )
+        if contamination_concern or not cheek_supported:
+            jawline.weight_multiplier = min(
+                jawline.weight_multiplier,
+                JAWLINE_UNSUPPORTED_WEIGHT,
+            )
+            support_text = (
+                "contamination signals were present"
+                if contamination_concern
+                else "it did not agree with either cheek"
+            )
             jawline.downweight_reason = (
                 f"Jawline differs from cheek tone (Delta E {delta_e:.1f}, L difference {darkness_gap:.1f}); "
-                "its weight in the final estimate was reduced because contamination signals were present "
-                "(possible chin/neck shadow, "
-                "contour, occlusion, or uneven lighting)."
+                f"its influence was reduced to diagnostic-only support because {support_text}. "
+                f"Nearest cheek Delta E was {nearest_cheek_delta:.1f} and undertone difference "
+                f"was {undertone_delta:.1f} (possible chin/neck shadow, contour, "
+                "occlusion, or uneven lighting)."
             )
             warnings.append(jawline.downweight_reason)
 
@@ -569,7 +720,11 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
                 continue
             dist = _lab_distance(region.median_lab, anchor_lab)
             if dist > OPTIONAL_VS_CHEEK_DOWNWEIGHT_LAB_DISTANCE:
-                if name == JAWLINE_NAME and not _jawline_has_contamination_concern(region):
+                if (
+                    name == JAWLINE_NAME
+                    and not _jawline_has_contamination_concern(region)
+                    and _jawline_cheek_support(region, reliable_by_name)[0]
+                ):
                     continue
                 region.weight_multiplier *= 0.5
                 reason = (
@@ -609,11 +764,47 @@ def _cheek_area_balance(region_results: dict) -> tuple[float, str | None]:
     return balance, None
 
 
+def _apply_cheek_visibility_weights(region_results: dict) -> list[str]:
+    """Reduce a geometrically foreshortened cheek without excluding it.
+
+    Total mask area is used rather than color, so valid darker skin is never
+    treated as pose contamination merely because it has lower luminance.
+    """
+    left = region_results.get("left_cheek")
+    right = region_results.get("right_cheek")
+    if left is None or right is None:
+        return []
+    larger = max(left.total_pixel_count, right.total_pixel_count)
+    if larger < MIN_VALID_PIXELS_PER_REGION:
+        return []
+    smaller = left if left.total_pixel_count < right.total_pixel_count else right
+    area_ratio = smaller.total_pixel_count / max(larger, 1)
+    if area_ratio >= CHEEK_FORESHORTENED_AREA_RATIO or not smaller.reliable:
+        return []
+    smaller.weight_multiplier *= CHEEK_FORESHORTENED_WEIGHT
+    reason = (
+        f"{smaller.name.replace('_', ' ').title()} mask area is only {area_ratio:.0%} "
+        "of the opposite cheek, consistent with pose or partial visibility; "
+        "it remains included with reduced influence."
+    )
+    smaller.downweight_reason = (
+        f"{smaller.downweight_reason} {reason}" if smaller.downweight_reason else reason
+    )
+    return [reason]
+
+
 def _jawline_has_contamination_concern(jawline: RegionSkinResult) -> bool:
+    patch_lightness = [float(evidence.lab[0]) for evidence in jawline.patch_evidence]
+    patch_lightness_span = (
+        max(patch_lightness) - min(patch_lightness)
+        if len(patch_lightness) >= 2
+        else 0.0
+    )
     return (
         jawline.lab_std > JAWLINE_HIGH_LAB_STD
         or jawline.valid_ratio < JAWLINE_LOW_VALID_RATIO
         or jawline.shadow_highlight_ratio > 0.25
+        or patch_lightness_span > 8.0
         or jawline.reliability_score < REGION_RELIABILITY_THRESHOLD
         or jawline.specular_highlight_detected
     )
@@ -722,7 +913,10 @@ def _assign_region_quality(region_results: dict, reliable_by_name: dict) -> None
                 if region.weight_multiplier >= 0.75 and not region.excluded:
                     reasons.append("Jawline/lower-cheek area supports shade depth when clean.")
                 else:
-                    reasons.append("Jawline is reduced only because contamination signals were present.")
+                    reasons.append(
+                        "Side-jaw evidence was reduced because it was contaminated "
+                        "or did not corroborate either cheek."
+                    )
             elif region.name == FOREHEAD_NAME:
                 reasons.append("Forehead is treated as supporting evidence when reliable.")
 
@@ -784,6 +978,80 @@ def _weighted_percentile(values: np.ndarray, weights: np.ndarray, percentile: fl
     return float(sorted_values[np.searchsorted(cumulative, percentile / 100.0, side="left")])
 
 
+def _ciede2000_matrix(labs: np.ndarray) -> np.ndarray:
+    labs = np.asarray(labs, dtype=np.float64)
+    first = labs[:, None, :]
+    second = labs[None, :, :]
+    return deltaE_ciede2000(
+        np.broadcast_to(first, (len(labs), len(labs), 3)),
+        np.broadcast_to(second, (len(labs), len(labs), 3)),
+    )
+
+
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    return _weighted_percentile(values, weights, 50.0)
+
+
+def _weighted_medoid_index(labs: np.ndarray, weights: np.ndarray) -> tuple[int, np.ndarray]:
+    distances = _ciede2000_matrix(labs)
+    normalized = np.asarray(weights, dtype=np.float64)
+    if normalized.sum() <= 0:
+        normalized = np.ones(len(labs), dtype=np.float64)
+    normalized = normalized / normalized.sum()
+    costs = distances @ normalized
+    return int(np.argmin(costs)), distances
+
+
+def _normalize_patch_weights_by_region(
+    candidates: list[dict],
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Normalize patch count within regions and enforce influence caps."""
+    adjusted = np.asarray(weights, dtype=np.float64).copy()
+    region_indices: dict[str, list[int]] = {}
+    for idx, candidate in enumerate(candidates):
+        region_indices.setdefault(candidate["region"], []).append(idx)
+
+    for region, indices in region_indices.items():
+        region = str(region)
+        local = adjusted[indices]
+        local_total = float(local.sum())
+        if local_total <= 0:
+            local = np.ones(len(indices), dtype=np.float64)
+            local_total = float(local.sum())
+        region_result = candidates[indices[0]]["region_result"]
+        region_prior = (
+            max(region_result.quality_score / 100.0, 0.05)
+            * region_result.weight_multiplier
+            * _region_base_weight(region)
+            * _region_patch_role_weight(region_result)
+        )
+        adjusted[indices] = local / local_total * max(region_prior, 0.01)
+
+    if adjusted.sum() <= 0:
+        adjusted = np.ones(len(candidates), dtype=np.float64)
+    adjusted /= adjusted.sum()
+
+    # Iteratively cap an over-dominant region and redistribute its excess.
+    for _ in range(4):
+        changed = False
+        for region, indices in region_indices.items():
+            cap = REGION_CONTRIBUTION_CAPS.get(region, 0.45)
+            total = float(adjusted[indices].sum())
+            if total <= cap + 1e-9:
+                continue
+            changed = True
+            excess = total - cap
+            adjusted[indices] *= cap / total
+            other = [i for i in range(len(adjusted)) if i not in indices]
+            other_total = float(adjusted[other].sum())
+            if other and other_total > 0:
+                adjusted[other] += excess * adjusted[other] / other_total
+        if not changed:
+            break
+    return adjusted / adjusted.sum()
+
+
 def _foundation_target_lab_from_patches(candidates: list[dict], kept_indices: list[int], kept_weights: np.ndarray) -> np.ndarray:
     kept_labs = np.stack([candidates[idx]["lab"] for idx in kept_indices])
     base_lab = _weighted_lab_mean(kept_labs, kept_weights)
@@ -802,7 +1070,17 @@ def _foundation_target_lab_from_patches(candidates: list[dict], kept_indices: li
     depth_indices = [
         idx
         for idx in kept_indices
-        if candidates[idx]["region"] in {*CHEEK_NAMES, JAWLINE_NAME} and candidates[idx]["midtone"]
+        if candidates[idx]["region"] in {*CHEEK_NAMES, JAWLINE_NAME}
+        and candidates[idx]["midtone"]
+        and (
+            candidates[idx]["region"] != JAWLINE_NAME
+            or (
+                candidates[idx]["region_result"].weight_multiplier >= 0.75
+                and not _jawline_has_contamination_concern(
+                    candidates[idx]["region_result"]
+                )
+            )
+        )
     ]
     if len(depth_indices) >= 2:
         depth_labs = np.stack([candidates[idx]["lab"] for idx in depth_indices])
@@ -828,31 +1106,45 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         highlight_rejected += region.highlight_patches_rejected
         shadow_rejected += region.shadow_patches_rejected
         midtone_total += region.midtone_patch_count
-        for rgb, lab, patch_quality, is_midtone in zip(
-            region.stable_patch_rgbs,
-            region.stable_patch_labs,
-            region.stable_patch_quality_scores,
-            region.stable_patch_midtone_flags,
-        ):
-            region_quality = max(region.quality_score / 100.0, 0.05)
-            weight = (
-                patch_quality
-                * region_quality
-                * region.weight_multiplier
-                * _region_base_weight(region.name)
-                * _region_patch_role_weight(region)
-            )
-            if is_midtone:
-                weight *= 1.12
-            else:
-                weight *= 0.82
+        evidence_items = region.patch_evidence
+        if not evidence_items:
+            evidence_items = [
+                SkinPatchEvidence(
+                    region=region.name,
+                    rgb=rgb,
+                    lab=lab,
+                    quality=float(patch_quality),
+                    is_midtone=bool(is_midtone),
+                    lab_std=region.lab_std,
+                    rgb_std=region.rgb_std,
+                    luminance_median=float(lab[0]),
+                    luminance_contrast=0.0,
+                    highlight_ratio=0.0,
+                    shadow_ratio=0.0,
+                    top=0,
+                    left=0,
+                    size=PATCH_SIZE,
+                )
+                for rgb, lab, patch_quality, is_midtone in zip(
+                    region.stable_patch_rgbs,
+                    region.stable_patch_labs,
+                    region.stable_patch_quality_scores,
+                    region.stable_patch_midtone_flags,
+                )
+            ]
+        for evidence in evidence_items:
+            patch_quality = evidence.quality
+            is_midtone = evidence.is_midtone
+            weight = patch_quality * (1.12 if is_midtone else 0.82)
             candidates.append(
                 {
                     "region": region.name,
-                    "rgb": np.array(rgb, dtype=np.float64),
-                    "lab": np.array(lab, dtype=np.float64),
+                    "region_result": region,
+                    "evidence": evidence,
+                    "rgb": np.array(evidence.rgb, dtype=np.float64),
+                    "lab": np.array(evidence.lab, dtype=np.float64),
                     "patch_quality": float(patch_quality),
-                    "region_quality": float(region_quality),
+                    "region_quality": float(max(region.quality_score / 100.0, 0.05)),
                     "weight": float(weight),
                     "midtone": bool(is_midtone),
                 }
@@ -868,6 +1160,13 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         "midtone_patches_used": 0,
         "dominant_region_contribution": "none",
         "foundation_depth_strategy": "region fallback",
+        "consensus_method": "region fallback",
+        "consensus_medoid_lab": None,
+        "outlier_threshold_delta_e": 0.0,
+        "region_contributions": {},
+        "adaptive_patch_sizes": sorted(
+            {evidence.size for region in combination_regions for evidence in region.patch_evidence}
+        ),
         "fallback_reason": "",
     }
     represented_regions = {c["region"] for c in candidates}
@@ -878,25 +1177,41 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
         return None, None, diagnostics
 
     labs = np.stack([c["lab"] for c in candidates])
-    weights = np.array([c["weight"] for c in candidates], dtype=np.float64)
-    quality_order = np.argsort(weights)[::-1]
-    central_count = max(3, min(len(candidates), int(np.ceil(len(candidates) * 0.6))))
-    central_idx = quality_order[:central_count]
-    central_lab = _weighted_lab_mean(labs[central_idx], weights[central_idx])
-    distances = np.linalg.norm(labs - central_lab, axis=1)
+    weights = _normalize_patch_weights_by_region(
+        candidates,
+        np.array([c["weight"] for c in candidates], dtype=np.float64),
+    )
+    medoid_idx, distance_matrix = _weighted_medoid_index(labs, weights)
+    central_lab = labs[medoid_idx]
+    distances = distance_matrix[medoid_idx]
+    distance_median = _weighted_median(distances, weights)
+    distance_mad = _weighted_median(np.abs(distances - distance_median), weights)
+    robust_scale = max(1.4826 * distance_mad, 1.0)
+    outlier_threshold = float(np.clip(distance_median + 3.0 * robust_scale, 6.0, 14.0))
+    soft_threshold = float(np.clip(distance_median + 1.5 * robust_scale, 4.0, outlier_threshold))
 
     kept_indices: list[int] = []
     adjusted_weights = weights.copy()
     for idx, candidate in enumerate(candidates):
         distance = float(distances[idx])
-        outlier_threshold = 18.0
-        if candidate["region"] == JAWLINE_NAME and candidate["midtone"]:
-            outlier_threshold = 22.0
-        if distance > outlier_threshold:
+        candidate_threshold = outlier_threshold
+        if (
+            candidate["region"] == JAWLINE_NAME
+            and candidate["midtone"]
+            and candidate["region_result"].weight_multiplier >= 0.75
+            and not _jawline_has_contamination_concern(
+                candidate["region_result"]
+            )
+        ):
+            candidate_threshold = min(outlier_threshold + 8.0, 22.0)
+        if distance > candidate_threshold:
             diagnostics["outlier_patches_rejected"] += 1
             continue
-        if distance > 10.0:
-            adjusted_weights[idx] *= 0.45
+        if distance > soft_threshold:
+            adjusted_weights[idx] *= max(
+                0.2,
+                1.0 - (distance - soft_threshold) / max(candidate_threshold - soft_threshold, 1.0),
+            )
         kept_indices.append(idx)
 
     if len(kept_indices) < 3 or len({candidates[i]["region"] for i in kept_indices}) < 2:
@@ -908,8 +1223,8 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
     kept_labs = labs[kept_indices]
     kept_weights = adjusted_weights[kept_indices]
     kept_distances = distances[kept_indices]
-    trim_cutoff = float(np.percentile(kept_distances, 85))
-    trim_mask = kept_distances <= max(trim_cutoff, 8.0)
+    trim_cutoff = _weighted_percentile(kept_distances, kept_weights, 90.0)
+    trim_mask = kept_distances <= max(trim_cutoff, 6.0)
     if trim_mask.sum() >= 3 and len(set(candidates[i]["region"] for i, keep in zip(kept_indices, trim_mask) if keep)) >= 2:
         kept_indices = [idx for idx, keep in zip(kept_indices, trim_mask) if keep]
         kept_labs = labs[kept_indices]
@@ -936,11 +1251,107 @@ def _aggregate_patch_candidates(combination_regions: list) -> tuple[tuple | None
             "foundation_depth_strategy": (
                 "undertone from diffuse cheek patches; depth L* from reliable lower-midtone cheek/jawline patches"
             ),
+            "consensus_method": "weighted CIEDE2000 medoid with MAD outlier rejection",
+            "consensus_medoid_lab": tuple(central_lab.tolist()),
+            "outlier_threshold_delta_e": outlier_threshold,
             "patch_foundation_target_lab": tuple(target_lab_array.tolist()),
             "patch_foundation_target_rgb": _lab_to_rgb_tuple(target_lab_array),
+            "retained_patch_labs": [
+                tuple(candidates[idx]["lab"].tolist()) for idx in kept_indices
+            ],
+            "retained_patch_weights": [float(weight) for weight in kept_weights],
+            "retained_patch_regions": [
+                str(candidates[idx]["region"]) for idx in kept_indices
+            ],
         }
     )
+    diagnostics["region_contributions"] = {
+        region: float(weight / total_weight)
+        for region, weight in region_weight_totals.items()
+    }
     return final_rgb, tuple(final_lab_array.tolist()), diagnostics
+
+
+def _bootstrap_patch_uncertainty(
+    patch_diagnostics: dict,
+    reference_lab: tuple,
+) -> tuple[list[tuple], dict]:
+    labs_raw = patch_diagnostics.get("retained_patch_labs", [])
+    weights_raw = patch_diagnostics.get("retained_patch_weights", [])
+    regions = patch_diagnostics.get("retained_patch_regions", [])
+    fallback = {
+        "bootstrap_iterations": 0,
+        "lab_std": (0.0, 0.0, 0.0),
+        "lab_interval_90": {},
+        "l_interval_90": None,
+        "delta_e_radius_p90": 12.0,
+        "patch_agreement": 0.0,
+        "stability_score": 45.0,
+        "method": "insufficient stable patches",
+    }
+    if len(labs_raw) < 3 or len(set(regions)) < 2:
+        return [], fallback
+
+    labs = np.asarray(labs_raw, dtype=np.float64)
+    weights = np.asarray(weights_raw, dtype=np.float64)
+    if len(weights) != len(labs) or weights.sum() <= 0:
+        weights = np.ones(len(labs), dtype=np.float64)
+    region_indices = {
+        region: np.array([idx for idx, value in enumerate(regions) if value == region], dtype=int)
+        for region in dict.fromkeys(regions)
+    }
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    samples = []
+    for _ in range(BOOTSTRAP_ITERATIONS):
+        sample_indices = []
+        for indices in region_indices.values():
+            sample_indices.extend(
+                rng.choice(indices, size=len(indices), replace=True).tolist()
+            )
+        sample_indices_array = np.asarray(sample_indices, dtype=int)
+        samples.append(
+            _weighted_lab_mean(
+                labs[sample_indices_array],
+                weights[sample_indices_array],
+            )
+        )
+
+    sample_array = np.stack(samples)
+    reference = np.asarray(reference_lab, dtype=np.float64)
+    reference_tiled = np.tile(reference, (len(sample_array), 1))
+    radii = deltaE_ciede2000(reference_tiled, sample_array)
+    lower = np.percentile(sample_array, 5, axis=0)
+    upper = np.percentile(sample_array, 95, axis=0)
+    radius_p90 = float(np.percentile(radii, 90))
+    patch_agreement = float(np.clip(1.0 - radius_p90 / 12.0, 0.0, 1.0))
+    diagnostics = {
+        "bootstrap_iterations": BOOTSTRAP_ITERATIONS,
+        "lab_std": tuple(np.std(sample_array, axis=0).tolist()),
+        "lab_interval_90": {
+            channel: (float(lower[idx]), float(upper[idx]))
+            for idx, channel in enumerate(("l", "a", "b"))
+        },
+        "l_interval_90": (float(lower[0]), float(upper[0])),
+        "delta_e_radius_p90": radius_p90,
+        "patch_agreement": patch_agreement,
+        "stability_score": float(np.clip(45.0 + 55.0 * patch_agreement, 0.0, 100.0)),
+        "method": "96 deterministic stratified patch bootstrap samples",
+    }
+    return [tuple(sample.tolist()) for sample in sample_array], diagnostics
+
+
+def _shift_bootstrap_to_target(
+    bootstrap_labs: list[tuple],
+    measured_lab: tuple,
+    target_lab: tuple,
+) -> list[tuple]:
+    if not bootstrap_labs:
+        return []
+    samples = np.asarray(bootstrap_labs, dtype=np.float64)
+    offset = np.asarray(target_lab, dtype=np.float64) - np.asarray(measured_lab, dtype=np.float64)
+    shifted = samples + offset
+    shifted[:, 0] = np.clip(shifted[:, 0], 0.0, 100.0)
+    return [tuple(sample.tolist()) for sample in shifted]
 
 
 def _weighted_region_blend(combination_regions: list) -> tuple[tuple, tuple]:
@@ -980,24 +1391,46 @@ def _stability_label(score: float) -> str:
     return "poor"
 
 
-def _region_stability_summary(label: str, most_influential_region: str | None) -> str:
-    if label in {"excellent", "good"}:
-        return (
-            f"Region stability was {label}; removing any one trusted region did not "
-            "significantly change the final tone."
-        )
+def _region_stability_summary(
+    label: str,
+    most_influential_region: str | None,
+    support_mode: str = "agreement",
+    contribution: float = 0.0,
+) -> str:
     region_text = (
         most_influential_region.replace("_", " ").title()
         if most_influential_region
         else "one region"
     )
+    if support_mode == "limited_independent_support":
+        return (
+            f"Independent region support was limited: {region_text} supplied "
+            f"{contribution:.0%} of retained patch influence while other regions "
+            "were reduced. This is limited corroboration, not direct evidence "
+            "that trusted regions contradict one another."
+        )
+    if support_mode == "contradictory":
+        return (
+            f"Region stability was {label}; trusted regions disagreed and removing "
+            f"{region_text} caused the largest leave-one-region-out color change, "
+            "so confidence was reduced."
+        )
+    if label in {"excellent", "good"}:
+        return (
+            f"Region stability was {label}; removing any one trusted region did not "
+            "significantly change the final tone."
+        )
     return (
-        f"Region stability was {label}; {region_text} had stronger influence, "
-        "so confidence was reduced."
+        f"Region stability was {label}; removing {region_text} caused the "
+        "largest leave-one-region-out color change, so confidence was reduced."
     )
 
 
-def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> dict:
+def _analyze_region_stability(
+    combination_regions: list,
+    final_lab: tuple,
+    region_contributions: dict | None = None,
+) -> dict:
     diagnostics = {
         "stability_score": 100.0,
         "stability_label": "excellent",
@@ -1006,6 +1439,9 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
         "leave_one_out_delta_e": {},
         "warnings": [],
         "reasons": [],
+        "support_mode": "agreement",
+        "region_contributions": {},
+        "influence_adjusted_leave_one_out_delta_e": {},
         "summary": "Region stability was excellent; removing any one trusted region did not significantly change the final tone.",
     }
     if len(combination_regions) < 3:
@@ -1031,15 +1467,84 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
     if not deltas:
         return diagnostics
 
+    contributions = {
+        region.name: float((region_contributions or {}).get(region.name, 0.0))
+        for region in combination_regions
+    }
+    if sum(contributions.values()) <= 0:
+        fallback_weights = {
+            region.name: (
+                region.valid_pixel_count
+                * region.weight_multiplier
+                * _region_base_weight(region.name)
+            )
+            for region in combination_regions
+        }
+        total = sum(fallback_weights.values()) or 1.0
+        contributions = {
+            name: float(value / total)
+            for name, value in fallback_weights.items()
+        }
+    adjusted_deltas = {
+        name: float(delta * max(1.0 - contributions.get(name, 0.0), 0.35))
+        for name, delta in deltas.items()
+    }
     max_delta = max(deltas.values())
     avg_delta = float(np.mean(list(deltas.values())))
     most_influential_region = max(deltas, key=deltas.get)
-    unstable_regions = [name for name, delta in deltas.items() if delta >= 8.0]
-    score = float(np.clip(100.0 - max_delta * 5.5 - avg_delta * 1.5, 0.0, 100.0))
+    dominant_contribution = contributions.get(most_influential_region, 0.0)
+    left = next(
+        (region for region in combination_regions if region.name == "left_cheek"),
+        None,
+    )
+    right = next(
+        (region for region in combination_regions if region.name == "right_cheek"),
+        None,
+    )
+    trusted_cheeks_disagree = bool(
+        left is not None
+        and right is not None
+        and left.weight_multiplier >= 0.65
+        and right.weight_multiplier >= 0.65
+        and contributions.get(left.name, 0.0) >= 0.25
+        and contributions.get(right.name, 0.0) >= 0.25
+        and _lab_distance(left.median_lab, right.median_lab)
+        > CHEEK_AGREEMENT_LAB_DISTANCE
+    )
+    if trusted_cheeks_disagree:
+        support_mode = "contradictory"
+        scoring_deltas = deltas
+    elif max_delta >= 8.0 and dominant_contribution >= 0.40:
+        support_mode = "limited_independent_support"
+        scoring_deltas = adjusted_deltas
+    else:
+        support_mode = "agreement"
+        scoring_deltas = adjusted_deltas
+    scoring_max = max(scoring_deltas.values())
+    scoring_avg = float(np.mean(list(scoring_deltas.values())))
+    unstable_regions = [
+        name for name, delta in scoring_deltas.items() if delta >= 8.0
+    ]
+    score = float(
+        np.clip(
+            100.0 - scoring_max * 5.5 - scoring_avg * 1.5,
+            0.0,
+            100.0,
+        )
+    )
     label = _stability_label(score)
-    summary = _region_stability_summary(label, most_influential_region)
+    summary = _region_stability_summary(
+        label,
+        most_influential_region,
+        support_mode=support_mode,
+        contribution=dominant_contribution,
+    )
     warnings = []
-    if unstable_regions or label in {"fair", "poor"}:
+    if (
+        unstable_regions
+        or label in {"fair", "poor"}
+        or support_mode == "limited_independent_support"
+    ):
         warnings.append(summary)
 
     diagnostics.update(
@@ -1049,10 +1554,17 @@ def _analyze_region_stability(combination_regions: list, final_lab: tuple) -> di
             "most_influential_region": most_influential_region,
             "unstable_regions": unstable_regions,
             "leave_one_out_delta_e": {name: round(delta, 2) for name, delta in deltas.items()},
+            "influence_adjusted_leave_one_out_delta_e": {
+                name: round(delta, 2)
+                for name, delta in adjusted_deltas.items()
+            },
+            "support_mode": support_mode,
+            "region_contributions": contributions,
             "warnings": warnings,
             "reasons": [
                 f"Maximum leave-one-region-out shift was {max_delta:.1f} Delta E.",
                 f"Average leave-one-region-out shift was {avg_delta:.1f} Delta E.",
+                f"Influence-adjusted maximum shift was {scoring_max:.1f} Delta E.",
             ],
             "summary": summary,
         }
@@ -1070,11 +1582,18 @@ def _region_has_highlight_bias(region: RegionSkinResult) -> bool:
 
 def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict]:
     candidates = []
+    region_lightness: dict[str, float] = {}
     for name in (*CHEEK_NAMES, JAWLINE_NAME):
         region = region_results.get(name)
         if region is None or not region.reliable or region.excluded or region.median_lab is None:
             continue
-        if name == JAWLINE_NAME and _jawline_has_contamination_concern(region):
+        if (
+            name == JAWLINE_NAME
+            and (
+                _jawline_has_contamination_concern(region)
+                or region.weight_multiplier < 0.75
+            )
+        ):
             continue
         labs = [
             np.array(lab, dtype=np.float64)
@@ -1093,12 +1612,29 @@ def _lower_face_depth_evidence(region_results: dict) -> tuple[float | None, dict
             if name == JAWLINE_NAME:
                 weight *= 1.25
             candidates.append((name, lab, weight))
+        region_lightness[name] = float(
+            _weighted_percentile(
+                np.array([lab[0] for lab in labs], dtype=np.float64),
+                np.array(weights, dtype=np.float64),
+                40.0,
+            )
+        )
 
+    represented_regions = list(dict.fromkeys([name for name, _, _ in candidates]))
+    region_l_span = (
+        max(region_lightness.values()) - min(region_lightness.values())
+        if len(region_lightness) >= 2
+        else 0.0
+    )
+    region_agreement = len(region_lightness) >= 2 and region_l_span <= 10.0
     diagnostics = {
         "lower_face_patch_count": len(candidates),
-        "lower_face_regions": list(dict.fromkeys([name for name, _, _ in candidates])),
+        "lower_face_regions": represented_regions,
+        "lower_face_region_lightness": region_lightness,
+        "lower_face_region_l_span": region_l_span,
+        "lower_face_region_agreement": region_agreement,
     }
-    if len(candidates) < 2 or JAWLINE_NAME not in diagnostics["lower_face_regions"]:
+    if len(candidates) < 2 or not region_agreement:
         return None, diagnostics
     labs = np.stack([lab for _, lab, _ in candidates])
     weights = np.array([weight for _, _, weight in candidates], dtype=np.float64)
@@ -1116,9 +1652,8 @@ def _build_foundation_target(
     measured_rgb_tuple = tuple(int(v) for v in measured_rgb)
     diagnostics = {
         "criteria": {
-            "deep_or_rich_deep": depth_estimate in {"deep", "rich-deep"},
             "highlight_influence": False,
-            "central_brighter_than_lower": False,
+            "measured_brighter_than_lower": False,
             "lower_face_reliable": False,
         },
         "measured_lab": tuple(measured_lab_array.tolist()),
@@ -1133,7 +1668,7 @@ def _build_foundation_target(
     lower_l, lower_diag = _lower_face_depth_evidence(region_results)
     diagnostics.update(lower_diag)
     diagnostics["lower_face_depth_l"] = lower_l
-    diagnostics["criteria"]["lower_face_reliable"] = lower_l is not None
+    diagnostics["criteria"]["lower_face_reliable"] = False
 
     central_regions = [
         region
@@ -1144,15 +1679,22 @@ def _build_foundation_target(
     diagnostics["central_face_l"] = central_l
     if lower_l is not None:
         diagnostics["central_minus_lower_l"] = central_l - lower_l
-        diagnostics["criteria"]["central_brighter_than_lower"] = (central_l - lower_l) >= 5.0
+        diagnostics["measured_minus_lower_l"] = float(measured_lab_array[0] - lower_l)
+        diagnostics["criteria"]["measured_brighter_than_lower"] = bool(
+            (measured_lab_array[0] - lower_l) >= 3.0
+        )
+        diagnostics["criteria"]["lower_face_reliable"] = bool(
+            diagnostics["criteria"]["measured_brighter_than_lower"]
+        )
     else:
         diagnostics["central_minus_lower_l"] = 0.0
+        diagnostics["measured_minus_lower_l"] = 0.0
 
     target_lab = measured_lab_array.copy()
     patch_target = patch_voting_diagnostics.get("patch_foundation_target_lab")
     if patch_target is not None:
         patch_target_lab = np.array(patch_target, dtype=np.float64)
-        target_lab[1:] = 0.75 * measured_lab_array[1:] + 0.25 * patch_target_lab[1:]
+        target_lab[1:] = 0.25 * measured_lab_array[1:] + 0.75 * patch_target_lab[1:]
 
     all_criteria = all(diagnostics["criteria"].values())
     if not all_criteria:
@@ -1161,9 +1703,16 @@ def _build_foundation_target(
         diagnostics["reason"] = reason
         return measured_rgb_tuple, tuple(measured_lab_array.tolist()), False, reason, diagnostics
 
-    conservative_l = min(float(measured_lab_array[0]), 0.70 * float(lower_l) + 0.30 * float(measured_lab_array[0]))
-    max_shift = 5.0 if depth_estimate == "rich-deep" else 3.5
-    target_l = max(float(measured_lab_array[0]) - max_shift, conservative_l)
+    supported_gap = float(measured_lab_array[0] - lower_l)
+    max_shift = (
+        5.0
+        if depth_estimate == "rich-deep"
+        else 4.0
+        if depth_estimate in {"tan", "deep"}
+        else 3.0
+    )
+    supported_shift = min(max_shift, 0.60 * supported_gap)
+    target_l = float(measured_lab_array[0]) - supported_shift
     if float(measured_lab_array[0]) - target_l < 1.0:
         reason = "Foundation target matches measured visible tone; lower-face evidence did not support a meaningful deeper target."
         diagnostics["active"] = False
@@ -1174,8 +1723,9 @@ def _build_foundation_target(
     target_lab_tuple = tuple(target_lab.tolist())
     target_rgb = _lab_to_rgb_tuple(target_lab)
     reason = (
-        "Foundation target was adjusted slightly deeper because highlight influence was detected "
-        "and lower-cheek/jawline patches supported a deeper base tone."
+        f"Foundation target L* was adjusted slightly deeper by {supported_shift:.1f} because highlight "
+        "influence was detected and at least two agreeing lower-face regions supported "
+        "a deeper base tone; cheek-derived undertone was preserved."
     )
     diagnostics.update(
         {
@@ -1184,6 +1734,8 @@ def _build_foundation_target(
             "target_lab": target_lab_tuple,
             "target_rgb": target_rgb,
             "l_adjustment": float(measured_lab_array[0] - target_l),
+            "maximum_l_adjustment": max_shift,
+            "supported_l_gap": supported_gap,
         }
     )
     return target_rgb, target_lab_tuple, True, reason, diagnostics
@@ -1272,9 +1824,9 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     shadow/highlight luminance extremes and extreme-saturation pixels, then
     takes the median RGB/Lab. Cheeks anchor the trust check: forehead is
     excluded outright if it disagrees strongly with the cheeks (likely
-    hair/shadow contamination); jawline is down-weighted, not excluded,
-    when it is specifically darker than the cheeks (possible chin/neck shadow,
-    contour, occlusion, or uneven lighting). The remaining (non-excluded) reliable regions are
+    hair/shadow contamination); side-jaw evidence receives material weight
+    only when it corroborates a cheek in color or clean undertone/depth.
+    The remaining (non-excluded) reliable regions are
     combined, weighted by valid pixel count and any down-weighting, into
     one final skin color.
     """
@@ -1289,6 +1841,7 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
 
     reliable_by_name = {name: r for name, r in region_results.items() if r.reliable}
     warnings.extend(_apply_forehead_and_jawline_rules(reliable_by_name))
+    warnings.extend(_apply_cheek_visibility_weights(region_results))
     cheek_area_balance, cheek_area_warning = _cheek_area_balance(region_results)
     if cheek_area_warning:
         warnings.append(cheek_area_warning)
@@ -1335,6 +1888,10 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
     final_rgb, final_lab, patch_voting_diagnostics = _final_color_from_regions(combination_regions)
     if not patch_voting_diagnostics.get("used") and patch_voting_diagnostics.get("fallback_reason"):
         warnings.append(patch_voting_diagnostics["fallback_reason"])
+    measured_bootstrap_labs, uncertainty_diagnostics = _bootstrap_patch_uncertainty(
+        patch_voting_diagnostics,
+        final_lab,
+    )
     depth_diagnostic = build_skin_depth_diagnostic(final_lab)
     (
         foundation_target_rgb,
@@ -1349,9 +1906,21 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         patch_voting_diagnostics,
         depth_diagnostic.depth_category,
     )
+    bootstrap_labs = _shift_bootstrap_to_target(
+        measured_bootstrap_labs,
+        final_lab,
+        foundation_target_lab,
+    )
     if foundation_target_active:
         warnings.append(foundation_target_reason)
-    stability_diagnostics = _analyze_region_stability(combination_regions, final_lab)
+    stability_diagnostics = _analyze_region_stability(
+        combination_regions,
+        final_lab,
+        region_contributions=patch_voting_diagnostics.get(
+            "region_contributions",
+            {},
+        ),
+    )
     warnings.extend(stability_diagnostics.get("warnings", []))
 
     consistency = _adjusted_region_consistency(combination_regions, reliable_by_name)
@@ -1410,6 +1979,8 @@ def extract_skin_tone(image_rgb: np.ndarray, masks: dict) -> SkinToneResult:
         foundation_target_active=foundation_target_active,
         foundation_target_reason=foundation_target_reason,
         foundation_target_diagnostics=foundation_target_diagnostics,
+        bootstrap_labs=bootstrap_labs,
+        uncertainty_diagnostics=uncertainty_diagnostics,
         depth_estimate=depth_diagnostic.depth_category,
         ita_degrees=depth_diagnostic.ita_degrees,
         ita_category=depth_diagnostic.ita_category,

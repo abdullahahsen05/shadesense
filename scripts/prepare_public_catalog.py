@@ -23,6 +23,8 @@ OUTPUT_COLUMNS = [
     "hex",
     "undertone",
     "depth",
+    "product_type",
+    "catalog_quality_score",
     "source",
     "source_url",
 ]
@@ -145,6 +147,42 @@ def infer_depth(hex_value: str, lightness=None) -> str:
     return "rich-deep"
 
 
+def classify_product_type(product) -> str:
+    text = "" if product is None or pd.isna(product) else str(product).casefold()
+    if "bb " in f"{text} " or "cc " in f"{text} " or "bb cream" in text or "cc cream" in text:
+        return "bb_cc"
+    if "tinted moisturizer" in text or "tinted moisturiser" in text:
+        return "tinted_moisturizer"
+    if "skin tint" in text or ("tint" in text and "foundation" not in text):
+        return "tint"
+    if "powder" in text:
+        return "powder"
+    if "cushion" in text:
+        return "cushion"
+    if "stick" in text:
+        return "stick"
+    if "concealer" in text:
+        return "concealer_hybrid"
+    if any(term in text for term in ("foundation", "base", "complexion", "teint")):
+        return "foundation"
+    return "other_base"
+
+
+def metadata_quality(product, undertone, depth, source_url) -> float:
+    score = 0.50
+    if product and str(product).casefold() != "unknown":
+        score += 0.15
+    if source_url:
+        score += 0.10
+    if undertone != "unknown":
+        score += 0.10
+    if depth != "unknown":
+        score += 0.10
+    if classify_product_type(product) != "other_base":
+        score += 0.05
+    return min(score, 1.0)
+
+
 def _first_column(columns: list[str], candidates: list[str]) -> str | None:
     lower_to_original = {c.lower(): c for c in columns}
     for candidate in candidates:
@@ -237,16 +275,23 @@ def _normalize_file(path: Path, summary: PrepareSummary) -> list[dict[str, str]]
             )
             continue
 
+        undertone = infer_undertone(*text_values)
+        depth = infer_depth(hex_value, row.get(lightness_col) if lightness_col else None)
+        source_url = _clean_text(row.get(url_col) if url_col else None, "")
         rows.append(
             {
                 "brand": brand,
                 "product": product,
                 "shade_name": shade_name,
                 "hex": hex_value,
-                "undertone": infer_undertone(*text_values),
-                "depth": infer_depth(hex_value, row.get(lightness_col) if lightness_col else None),
+                "undertone": undertone,
+                "depth": depth,
+                "product_type": classify_product_type(product),
+                "catalog_quality_score": metadata_quality(
+                    product, undertone, depth, source_url
+                ),
                 "source": SOURCE_LABEL,
-                "source_url": _clean_text(row.get(url_col) if url_col else None, ""),
+                "source_url": source_url,
             }
         )
     return rows

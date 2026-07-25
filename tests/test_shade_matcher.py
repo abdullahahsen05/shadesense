@@ -5,7 +5,7 @@ from skimage.color import deltaE_ciede2000
 
 from src.config import SHADE_CATALOG_PATH
 from src.shade_catalog import CatalogValidationError, load_shade_catalog
-from src.shade_matcher import estimate_depth_from_lab_l, match_shades
+from src.shade_matcher import _too_light_penalty, estimate_depth_from_lab_l, match_shades
 
 
 def test_deltaE_ciede2000_identical_colors_is_zero():
@@ -333,3 +333,261 @@ def test_top_three_returns_distinct_candidates_when_enough_unique_shades_exist()
     matches = match_shades(np.array([50.0, 8.0, 16.0]), df, top_k=3)
     assert len(matches) == 3
     assert len({(m.brand, m.shade_name) for m in matches}) == 3
+
+
+def test_uncertainty_samples_add_recommendation_stability():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A", "B", "C", "D"],
+            "brand": ["A", "B", "C", "D"],
+            "product": ["Foundation"] * 4,
+            "shade_name": ["A", "B", "C", "D"],
+            "hex": ["#806050", "#876657", "#927060", "#A08070"],
+            "r": [128, 135, 146, 160],
+            "g": [96, 102, 112, 128],
+            "b": [80, 87, 96, 112],
+            "lab_l": [45.0, 48.0, 52.0, 58.0],
+            "lab_a": [8.0, 8.5, 9.0, 10.0],
+            "lab_b": [14.0, 14.5, 15.0, 16.0],
+            "depth": ["tan", "tan", "medium", "medium"],
+            "product_type": ["foundation"] * 4,
+            "catalog_quality_score": [1.0] * 4,
+        }
+    )
+    samples = np.array(
+        [[45.0 + offset, 8.0, 14.0] for offset in np.linspace(-0.5, 0.5, 21)]
+    )
+
+    matches = match_shades(
+        np.array([45.0, 8.0, 14.0]),
+        df,
+        top_k=3,
+        uncertainty_labs=samples,
+    )
+
+    assert matches[0].recommendation_stability is not None
+    assert matches[0].recommendation_stability > 0.8
+    assert matches[0].top3_stability == 1.0
+    assert matches[0].delta_e_median is not None
+    assert matches[0].delta_e_p90 is not None
+
+
+def test_uncertainty_distribution_can_promote_consistently_better_shade():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["point", "robust", "far"],
+            "brand": ["Point", "Robust", "Far"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Point", "Robust", "Far"],
+            "hex": ["#806050", "#8A6858", "#A08070"],
+            "r": [128, 138, 160],
+            "g": [96, 104, 128],
+            "b": [80, 88, 112],
+            "lab_l": [50.0, 54.0, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    samples = np.repeat([[54.0, 8.0, 14.0]], repeats=31, axis=0)
+
+    point_only = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=1)
+    distribution_ranked = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=1,
+        uncertainty_labs=samples,
+    )
+
+    assert point_only[0].shade_id == "point"
+    assert distribution_ranked[0].shade_id == "robust"
+    assert distribution_ranked[0].delta_e > point_only[0].delta_e
+    assert distribution_ranked[0].delta_e_median < distribution_ranked[0].delta_e
+    assert distribution_ranked[0].uncertainty_adjustment < 0.0
+
+
+def test_invalid_uncertainty_samples_leave_point_ranking_unchanged():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["A", "B"],
+            "brand": ["A", "B"],
+            "shade_name": ["A", "B"],
+            "hex": ["#806050", "#906858"],
+            "r": [128, 144],
+            "g": [96, 104],
+            "b": [80, 88],
+            "lab_l": [50.0, 58.0],
+            "lab_a": [8.0, 8.0],
+            "lab_b": [14.0, 14.0],
+        }
+    )
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=2,
+        uncertainty_labs=np.array([[np.nan, 8.0, 14.0]]),
+    )
+
+    assert [match.shade_id for match in matches] == ["A", "B"]
+    assert all(match.delta_e_median is None for match in matches)
+
+
+def test_lighting_sensitivity_samples_influence_ranking_and_stability():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["point", "stable", "far"],
+            "brand": ["Point", "Stable", "Far"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Point", "Stable", "Far"],
+            "hex": ["#806050", "#8A6858", "#A08070"],
+            "r": [128, 138, 160],
+            "g": [96, 104, 128],
+            "b": [80, 88, 112],
+            "lab_l": [50.0, 54.0, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    lighting_samples = np.repeat([[54.0, 8.0, 14.0]], repeats=6, axis=0)
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=2,
+        lighting_sensitivity_labs=lighting_samples,
+    )
+
+    assert matches[0].shade_id == "stable"
+    assert matches[0].lighting_recommendation_stability == 1.0
+    assert matches[0].lighting_top3_stability == 1.0
+    assert matches[0].lighting_delta_e_p90 == 0.0
+
+
+def test_supported_uncertainty_range_prevents_unjustified_too_light_penalty():
+    assert _too_light_penalty(50.0, 57.0) > 0.0
+    assert _too_light_penalty(50.0, 57.0, supported_upper_l=55.0) == 0.0
+
+
+def test_near_tied_foundation_is_preferred_over_concealer_hybrid():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["concealer", "foundation", "far"],
+            "brand": ["A", "B", "C"],
+            "product": ["Foundation Concealer", "Liquid Foundation", "Foundation"],
+            "shade_name": ["Exact Concealer", "Near Foundation", "Far Foundation"],
+            "hex": ["#806050", "#816151", "#A08070"],
+            "r": [128, 129, 160],
+            "g": [96, 97, 128],
+            "b": [80, 81, 112],
+            "lab_l": [50.0, 50.5, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+            "product_type": ["concealer_hybrid", "foundation", "foundation"],
+            "catalog_quality_score": [1.0, 1.0, 1.0],
+        }
+    )
+
+    matches = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=1)
+
+    assert matches[0].shade_id == "foundation"
+    assert matches[0].delta_e > 0.0
+
+
+def test_clearly_better_concealer_color_is_not_overridden():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["concealer", "foundation"],
+            "brand": ["A", "B"],
+            "product": ["Foundation Concealer", "Liquid Foundation"],
+            "shade_name": ["Exact Concealer", "Far Foundation"],
+            "hex": ["#806050", "#A08070"],
+            "r": [128, 160],
+            "g": [96, 128],
+            "b": [80, 112],
+            "lab_l": [50.0, 57.0],
+            "lab_a": [8.0, 8.0],
+            "lab_b": [14.0, 14.0],
+            "product_type": ["concealer_hybrid", "foundation"],
+            "catalog_quality_score": [1.0, 1.0],
+        }
+    )
+
+    matches = match_shades(np.array([50.0, 8.0, 14.0]), df, top_k=2)
+
+    assert matches[0].shade_id == "concealer"
+
+
+def test_nearby_products_can_have_stable_family_but_unstable_exact_sku():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["near-a", "near-b", "far"],
+            "brand": ["A", "B", "C"],
+            "product": ["Foundation"] * 3,
+            "shade_name": ["Near A", "Near B", "Far"],
+            "hex": ["#806050", "#816151", "#A08070"],
+            "r": [128, 129, 160],
+            "g": [96, 97, 128],
+            "b": [80, 81, 112],
+            "lab_l": [50.0, 50.8, 65.0],
+            "lab_a": [8.0, 8.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0],
+        }
+    )
+    samples = np.array(
+        [[50.0, 8.0, 14.0], [50.9, 8.0, 14.0]] * 8,
+        dtype=float,
+    )
+
+    matches = match_shades(
+        np.array([50.4, 8.0, 14.0]),
+        df,
+        top_k=3,
+        uncertainty_labs=samples,
+        lighting_sensitivity_labs=samples,
+    )
+    best = matches[0]
+
+    assert best.recommendation_stability < 1.0
+    assert best.recommendation_family_stability == 1.0
+    assert best.top3_family_stability == 1.0
+    assert best.lighting_family_stability == 1.0
+    assert best.shade_family_size == 2
+    assert {best.shade_id, best.shade_family_alternatives[0]["shade_id"]} == {
+        "near-a",
+        "near-b",
+    }
+    assert matches[1].shade_id == "far"
+
+
+def test_shade_family_representatives_are_returned_before_near_duplicate_products():
+    df = pd.DataFrame(
+        {
+            "shade_id": ["near-a", "near-b", "near-c", "warm", "deep"],
+            "brand": ["A", "B", "C", "D", "E"],
+            "product": ["Foundation"] * 5,
+            "shade_name": ["Near A", "Near B", "Near C", "Warm", "Deep"],
+            "hex": ["#806050", "#816151", "#826252", "#946850", "#604838"],
+            "r": [128, 129, 130, 148, 96],
+            "g": [96, 97, 98, 104, 72],
+            "b": [80, 81, 82, 80, 56],
+            "lab_l": [50.0, 50.5, 51.0, 53.0, 42.0],
+            "lab_a": [8.0, 8.0, 8.0, 13.0, 8.0],
+            "lab_b": [14.0, 14.0, 14.0, 20.0, 14.0],
+        }
+    )
+
+    matches = match_shades(
+        np.array([50.0, 8.0, 14.0]),
+        df,
+        top_k=3,
+    )
+
+    assert [match.shade_id for match in matches] == [
+        "near-a",
+        "warm",
+        "deep",
+    ]
+    assert matches[0].shade_family_size == 3
+    assert {
+        item["shade_id"] for item in matches[0].shade_family_alternatives
+    } == {"near-b", "near-c"}

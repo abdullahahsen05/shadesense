@@ -5,30 +5,24 @@ This module contains presentation logic only. CV/matching logic lives in `src/`.
 
 import numpy as np
 import streamlit as st
-from PIL import Image
-
-from src.color_correction import apply_mild_color_correction, correction_settings_for_lighting
-from src.confidence import build_quality_report, compute_confidence
+from src.analysis_pipeline import analyze_rgb_image
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
-from src.extraction_quality import build_extraction_quality_report
 from src.extraction_summary import build_skin_extraction_summary
-from src.extraction_selection import run_dual_extraction
-from src.face_detection import detect_face_landmarks
-from src.image_quality import analyze_image_quality
-from src.lighting_quality import analyze_lighting_quality
-from src.region_masks import build_region_masks
+from src.image_io import open_rgb_image_with_metadata
+from src.multi_photo_consensus import build_multi_photo_consensus
 from src.shade_catalog import (
+    ALL_BASE_SCOPE,
+    FOUNDATION_ONLY_SCOPE,
     MOCK_CATALOG_KEY,
     PUBLIC_CATALOG_KEY,
     PUBLIC_CATALOG_LIMITATION,
     CatalogValidationError,
     catalog_definitions,
+    filter_catalog_by_product_scope,
     load_default_catalog,
-    load_shade_catalog,
     load_named_catalog,
 )
-from src.shade_matcher import match_shades
 from src.visualization import (
     draw_all_region_masks,
     draw_face_landmarks,
@@ -38,10 +32,25 @@ from src.visualization import (
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 
+
+@st.cache_data(show_spinner=False)
+def _load_default_catalog_cached():
+    """Load and validate the default catalog once per source-code version."""
+    return load_default_catalog()
+
+
+@st.cache_data(show_spinner=False)
+def _load_named_catalog_cached(catalog_key: str):
+    """Reuse validated catalog data across Streamlit reruns."""
+    return load_named_catalog(catalog_key)
+
+
 st.title(APP_NAME)
 catalog_options = catalog_definitions()
 try:
-    default_catalog_key, _, default_catalog_warnings = load_default_catalog()
+    default_catalog_key, default_catalog_df, default_catalog_warnings = (
+        _load_default_catalog_cached()
+    )
 except (FileNotFoundError, CatalogValidationError) as exc:
     st.error(f"Could not load any shade catalog: {exc}")
     st.stop()
@@ -58,15 +67,36 @@ selected_catalog_key = st.selectbox(
 )
 
 try:
-    catalog_df = load_named_catalog(selected_catalog_key)
+    catalog_df = (
+        default_catalog_df
+        if selected_catalog_key == default_catalog_key
+        else _load_named_catalog_cached(selected_catalog_key)
+    )
 except (FileNotFoundError, CatalogValidationError) as exc:
     st.error(f"Selected shade catalog error: {exc}")
     st.stop()
 
-SHADE_CATALOG_PATH = catalog_options[selected_catalog_key].path
+product_scope = st.selectbox(
+    "Recommendation product scope",
+    [FOUNDATION_ONLY_SCOPE, ALL_BASE_SCOPE],
+    format_func=lambda value: (
+        "Foundation only (liquid, stick, and powder)"
+        if value == FOUNDATION_ONLY_SCOPE
+        else "All base products (includes cushions, BB/CC, and tints)"
+    ),
+)
+try:
+    recommendation_catalog_df = filter_catalog_by_product_scope(
+        catalog_df,
+        product_scope,
+    )
+except CatalogValidationError as exc:
+    st.error(f"Product scope error: {exc}")
+    st.stop()
 
 st.caption(
     f"Selected catalog: {catalog_df.attrs.get('catalog_name', 'unknown')} | "
+    f"{len(recommendation_catalog_df)} eligible of "
     f"{catalog_df.attrs.get('valid_count', len(catalog_df))} shades | "
     f"Source: {catalog_df.attrs.get('source', 'unknown')}"
 )
@@ -84,26 +114,128 @@ st.caption(
 )
 extraction_mode = "auto"
 
-uploaded_file = st.file_uploader(
-    "Upload a facial image", type=["jpg", "jpeg", "png", "bmp"]
+uploaded_files = st.file_uploader(
+    "Upload one to three facial images",
+    type=["jpg", "jpeg", "png", "bmp"],
+    accept_multiple_files=True,
+    key="face-photos",
 )
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
-    image_rgb = np.array(image)
-    lighting_quality = analyze_lighting_quality(image_rgb)
-    correction_settings = correction_settings_for_lighting(lighting_quality)
-    corrected_rgb, correction_notes = apply_mild_color_correction(image_rgb, **correction_settings)
+if uploaded_files:
+    if len(uploaded_files) > 3:
+        st.warning("Only the first three photos are analysed.")
+        uploaded_files = uploaded_files[:3]
+
+    decoded_images = []
+    analyses = []
+    with st.spinner(f"Analysing {len(uploaded_files)} photo(s)..."):
+        for uploaded_file in uploaded_files:
+            decoded_image, color_metadata = open_rgb_image_with_metadata(
+                uploaded_file
+            )
+            original_rgb = np.asarray(decoded_image)
+            metadata = color_metadata.as_dict()
+            metadata["neutral_card_calibrated"] = False
+            decoded_images.append(
+                (decoded_image, original_rgb, color_metadata, uploaded_file.name)
+            )
+            analyses.append(
+                analyze_rgb_image(
+                    original_rgb,
+                    recommendation_catalog_df,
+                    extraction_mode=extraction_mode,
+                    top_k=TOP_K_SHADES,
+                    image_color_metadata=metadata,
+                )
+            )
+
+    consensus_result = (
+        build_multi_photo_consensus(
+            analyses,
+            recommendation_catalog_df,
+            top_k=TOP_K_SHADES,
+        )
+        if len(analyses) > 1
+        else None
+    )
+    reference_index = (
+        consensus_result.reference_index
+        if consensus_result is not None
+        and consensus_result.success
+        and consensus_result.reference_index is not None
+        else 0
+    )
+    image, image_rgb, image_color_metadata, image_name = decoded_images[
+        reference_index
+    ]
+    analysis = analyses[reference_index]
+
+    if consensus_result is not None:
+        st.subheader("Multi-photo consensus")
+        if consensus_result.success:
+            st.markdown(
+                f"**{consensus_result.readiness.state.title()} | "
+                f"{len(consensus_result.retained_indices)} of "
+                f"{len(analyses)} captures retained**"
+            )
+            st.caption(consensus_result.explanation)
+            st.caption(
+                "Cross-photo agreement: "
+                f"{consensus_result.agreement_delta_e_p90:.1f} Delta E "
+                "(90th percentile)."
+            )
+            st.image(
+                make_skin_swatch(consensus_result.consensus_rgb),
+                caption=(
+                    "Consensus foundation target: RGB "
+                    f"{consensus_result.consensus_rgb}, Lab "
+                    f"{tuple(round(value, 1) for value in consensus_result.consensus_lab)}"
+                ),
+                width=150,
+            )
+            evidence_rows = [
+                {
+                    "Photo": evidence.capture_index + 1,
+                    "File": decoded_images[evidence.capture_index][3],
+                    "Included": "yes" if evidence.included else "no",
+                    "Readiness": evidence.readiness_state,
+                    "Distance from medoid": (
+                        f"{evidence.distance_from_medoid:.1f} Delta E"
+                    ),
+                    "Quality weight": f"{evidence.weight:.0%}",
+                }
+                for evidence in consensus_result.evidence
+            ]
+            st.table(evidence_rows)
+            for warning in consensus_result.warnings:
+                st.warning(warning)
+        else:
+            for warning in consensus_result.warnings:
+                st.error(warning)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Uploaded Image")
-        st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
+        st.subheader("Reference Image")
+        st.image(
+            image_rgb,
+            caption=f"{image_name} | {image.width}x{image.height}px",
+            width=400,
+        )
+        if analysis.analysis_scale < 1.0:
+            st.caption(
+                "CV analysis used a proportional "
+                f"{analysis.image_rgb.shape[1]}x{analysis.image_rgb.shape[0]}px "
+                "copy for stable runtime and resolution-independent sampling."
+            )
+        if image_color_metadata.icc_converted_to_srgb:
+            st.caption(
+                "Embedded color profile converted to sRGB: "
+                f"{image_color_metadata.source_profile_description}."
+            )
+        for warning in image_color_metadata.warnings:
+            st.warning(warning)
 
-    face_result = detect_face_landmarks(corrected_rgb)
-    image_quality = analyze_image_quality(
-        image_rgb, face_result.landmarks if face_result.success else None
-    )
+    face_result = analysis.face_result
 
     for warning in face_result.warnings:
         st.warning(warning)
@@ -111,7 +243,35 @@ if uploaded_file is not None:
     if not face_result.success:
         st.error(face_result.error)
     else:
+        masks = analysis.masks
+        mask_capture_diagnostics = analysis.mask_capture_diagnostics
+        image_quality = analysis.image_quality
+        lighting_quality = analysis.lighting_quality
+        corrected_rgb = analysis.corrected_rgb
+        correction_notes = analysis.correction_notes
+        extraction_selection = analysis.extraction_selection
+        skin_result = analysis.skin_result
+        lighting_sensitivity = analysis.lighting_sensitivity
+        capture_uncertainty = analysis.capture_uncertainty
+        extraction_quality_report = analysis.extraction_quality_report
+        recommendation_readiness = analysis.recommendation_readiness
+        if consensus_result is not None and consensus_result.success:
+            recommendation_readiness = consensus_result.readiness
+        visualization_rgb = analysis.visualization_rgb
+        visual_source_label = analysis.visual_source_label
+
         with st.expander("Lighting correction notes"):
+            st.caption(
+                f"Automatic extraction source: "
+                f"{extraction_selection.selected_source}."
+            )
+            st.caption(
+                f"Correction candidate shift: "
+                f"{extraction_selection.lightness_shift:+.1f} L* and "
+                f"{extraction_selection.undertone_shift:.1f} a*/b* units."
+            )
+            for flag in extraction_selection.safety_flags:
+                st.warning(flag)
             for note in correction_notes:
                 st.caption(note)
 
@@ -138,31 +298,25 @@ if uploaded_file is not None:
         st.subheader("Lighting Quality")
         st.metric("Lighting quality score", f"{lighting_quality.score:.0%}")
         st.caption(lighting_quality.explanation)
+        if lighting_quality.using_face_regions:
+            st.caption(
+                f"Face highlight ratio {lighting_quality.face_highlight_ratio:.1%} · "
+                f"shadow ratio {lighting_quality.face_shadow_ratio:.1%} · "
+                f"left/right gap {lighting_quality.left_right_gap:.1f} · "
+                f"central/lower gap {lighting_quality.central_lower_gap:.1f}."
+            )
         for warning in lighting_quality.warnings:
             st.warning(warning)
-
-        masks = build_region_masks(corrected_rgb.shape, face_result.landmarks)
-        extraction_selection = run_dual_extraction(
-            image_rgb, corrected_rgb, masks, lighting_quality, extraction_mode
-        )
-        skin_result = extraction_selection.selected
-        skin_result.extraction_quality_reasons.append(extraction_selection.reason)
-        extraction_quality_report = build_extraction_quality_report(
-            skin_result,
-            image_quality=image_quality,
-            lighting_quality=lighting_quality,
-            extraction_selection=extraction_selection,
-            face_result=face_result,
-        )
-        visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
-        visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
+        for warning in mask_capture_diagnostics["warnings"]:
+            st.warning(warning)
 
         with col2:
             st.subheader("Detected Face Landmarks")
             overlay = draw_face_landmarks(visualization_rgb, face_result.landmarks)
             caption = (
                 f"{len(face_result.landmarks)} landmarks | displayed on {visual_source_label}. "
-                "Face detection used the corrected preview only for landmark stability."
+                "This is a diagnostic overlay; the extraction-source decision is "
+                "reported separately below."
             )
             st.image(overlay, caption=caption, width=400)
             st.caption(f"Landmark visualization source: displayed on {visual_source_label}.")
@@ -216,7 +370,15 @@ if uploaded_file is not None:
             )
             st.caption(f"Shade extraction source: {source_label}")
             st.caption(f"Selection reason: {extraction_selection.reason}")
-            st.metric("Extraction quality score", f"{skin_result.quality_score:.0%}")
+            st.metric(
+                "Raw region extraction score",
+                f"{skin_result.quality_score:.0%}",
+            )
+            st.caption(
+                "This is an internal region/pixel score. The formal Skin "
+                "Extraction Quality below also includes capture, lighting, "
+                "uncertainty, and cross-region stability."
+            )
             lab_rounded = tuple(round(v, 1) for v in skin_result.lab)
             st.caption(f"Measured visible skin tone: RGB {skin_result.rgb}")
             st.caption(f"Measured visible Lab: {lab_rounded}")
@@ -261,6 +423,38 @@ if uploaded_file is not None:
                 st.caption(f"{name.replace('_', ' ').title()}: {score:.0f}/100")
             for reason in extraction_quality_report["reasons"][1:]:
                 st.caption(reason)
+
+        st.subheader("Capture & Extraction Readiness")
+        st.markdown(
+            f"**{recommendation_readiness.state.title()} · "
+            f"{recommendation_readiness.score:.0f}/100**"
+        )
+        st.caption(recommendation_readiness.summary)
+        readiness_cols = st.columns(3)
+        with readiness_cols[0]:
+            st.metric(
+                "Capture readiness",
+                f"{recommendation_readiness.capture_readiness_score:.0f}/100",
+            )
+        with readiness_cols[1]:
+            st.metric(
+                "Shade-family stability",
+                f"{recommendation_readiness.shade_family_stability_score:.0f}/100",
+            )
+        with readiness_cols[2]:
+            st.metric(
+                "Exact-product stability",
+                f"{recommendation_readiness.exact_product_stability_score:.0f}/100",
+            )
+        st.caption(
+            "Capture readiness describes the photo and extraction. Shade-family "
+            "stability describes color-family repeatability. Exact-product "
+            "stability describes whether the same catalog SKU remains ranked first."
+        )
+        for reason in recommendation_readiness.reasons:
+            st.caption(reason)
+        for warning in recommendation_readiness.warnings:
+            st.warning(warning)
 
         st.subheader("Skin Extraction Summary")
         st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
@@ -310,7 +504,18 @@ if uploaded_file is not None:
                 st.caption(f"Lab: {tuple(round(v, 1) for v in skin_result.lab)}")
             st.caption(f"RGB difference: {extraction_selection.rgb_difference:.1f}")
             st.caption(f"Lab difference: {extraction_selection.lab_difference:.1f}")
+            st.caption(
+                f"Lightness shift: {extraction_selection.lightness_shift:+.1f} L*"
+            )
+            st.caption(
+                "Undertone shift: "
+                f"{extraction_selection.undertone_shift:.1f} a*/b* units"
+            )
             st.caption(f"Chroma preservation score: {extraction_selection.chroma_preservation_score:.0%}")
+            if extraction_selection.safety_flags:
+                st.markdown("**Correction safety guard**")
+                for flag in extraction_selection.safety_flags:
+                    st.warning(flag)
 
         with st.expander("Region color diagnostics"):
             st.caption("Region color diagnostics")
@@ -324,6 +529,68 @@ if uploaded_file is not None:
             st.caption(f"Shadow patches rejected: {patch_diag.get('shadow_patches_rejected', 0)}")
             st.caption(f"Mid-tone patches used: {patch_diag.get('midtone_patches_used', 0)}")
             st.caption(f"Dominant/trusted region contribution: {patch_diag.get('dominant_region_contribution', 'none')}")
+            st.caption(f"Consensus method: {patch_diag.get('consensus_method', 'region fallback')}")
+            st.caption(
+                f"Perceptual outlier threshold: "
+                f"{patch_diag.get('outlier_threshold_delta_e', 0):.1f} Delta E"
+            )
+            if patch_diag.get("adaptive_patch_sizes"):
+                st.caption(
+                    "Adaptive patch sizes: "
+                    + ", ".join(str(value) for value in patch_diag["adaptive_patch_sizes"])
+                    + " px"
+                )
+            region_contributions = patch_diag.get("region_contributions", {})
+            if region_contributions:
+                st.caption(
+                    "Region contributions: "
+                    + ", ".join(
+                        f"{name.replace('_', ' ')} {value:.0%}"
+                        for name, value in region_contributions.items()
+                    )
+                )
+            uncertainty_diag = skin_result.uncertainty_diagnostics or {}
+            st.markdown("**Extraction Uncertainty**")
+            st.caption(
+                f"Bootstrap samples: {uncertainty_diag.get('bootstrap_iterations', 0)}"
+            )
+            st.caption(
+                "90th-percentile uncertainty radius: "
+                f"{uncertainty_diag.get('delta_e_radius_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                f"Bootstrap stability: {uncertainty_diag.get('stability_score', 45.0):.0f}/100"
+            )
+            if uncertainty_diag.get("l_interval_90"):
+                lower_l, upper_l = uncertainty_diag["l_interval_90"]
+                st.caption(f"90% L* interval: {lower_l:.1f}–{upper_l:.1f}")
+            sensitivity_diag = skin_result.lighting_sensitivity_diagnostics or {}
+            st.markdown("**Lighting Sensitivity**")
+            st.caption(
+                f"Sensitivity score: {sensitivity_diag.get('score', 0.0):.0f}/100"
+            )
+            st.caption(
+                "90th-percentile perturbation shift: "
+                f"{sensitivity_diag.get('delta_e_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                "Usable perturbations: "
+                f"{sensitivity_diag.get('successful_variants', 0)}/"
+                f"{sensitivity_diag.get('attempted_variants', 0)}"
+            )
+            systematic_diag = skin_result.systematic_uncertainty_diagnostics or {}
+            st.markdown("**Systematic Capture Uncertainty**")
+            st.caption(
+                "Capture-only radius: "
+                f"{systematic_diag.get('systematic_radius', 0.0):.1f} Delta E"
+            )
+            st.caption(
+                "Combined patch + capture radius: "
+                f"{systematic_diag.get('total_delta_e_radius_p90', 12.0):.1f} Delta E"
+            )
+            st.caption(
+                f"Capture stability: {systematic_diag.get('score', 0.0):.0f}/100"
+            )
             if patch_diag.get("fallback_reason"):
                 st.caption(f"Patch voting fallback: {patch_diag['fallback_reason']}")
             stability_diag = skin_result.stability_diagnostics or {}
@@ -331,17 +598,35 @@ if uploaded_file is not None:
             st.caption(f"Region stability score: {stability_diag.get('stability_score', 0):.0f}/100")
             st.caption(f"Region stability label: {stability_diag.get('stability_label', 'unknown')}")
             st.caption(
-                "Most influential region: "
+                "Region support mode: "
+                f"{str(stability_diag.get('support_mode', 'agreement')).replace('_', ' ')}"
+            )
+            st.caption(
+                "Most sensitive leave-one-out region: "
                 f"{str(stability_diag.get('most_influential_region', 'none')).replace('_', ' ').title()}"
             )
             st.caption(f"Stability summary: {stability_diag.get('summary', 'not available')}")
             leave_one_out = stability_diag.get("leave_one_out_delta_e", {})
+            adjusted_leave_one_out = stability_diag.get(
+                "influence_adjusted_leave_one_out_delta_e",
+                {},
+            )
+            region_contributions = stability_diag.get(
+                "region_contributions",
+                {},
+            )
             if leave_one_out:
                 st.table(
                     [
                         {
                             "Left out region": name.replace("_", " ").title(),
-                            "Delta E shift": f"{delta:.2f}",
+                            "Retained influence": (
+                                f"{region_contributions.get(name, 0.0):.0%}"
+                            ),
+                            "Raw Delta E shift": f"{delta:.2f}",
+                            "Influence-adjusted shift": (
+                                f"{adjusted_leave_one_out.get(name, delta):.2f}"
+                            ),
                         }
                         for name, delta in leave_one_out.items()
                     ]
@@ -368,9 +653,15 @@ if uploaded_file is not None:
                         st.caption(f"Shadow/highlight ratio: {region.shadow_highlight_ratio:.0%}")
                         if region_name == "jawline":
                             if region.weight_multiplier < 1.0:
-                                st.caption(f"Jawline reduction reason: {region.downweight_reason}")
+                                st.caption(
+                                    "Side-jaw reduction reason: "
+                                    f"{region.downweight_reason}"
+                                )
                             else:
-                                st.caption("Jawline reduction reason: not reduced; reliable depth support.")
+                                st.caption(
+                                    "Side-jaw status: not reduced; clean evidence "
+                                    "corroborated cheek tone/depth."
+                                )
                         if region.makeup_influence_detected:
                             st.caption("possible makeup/highlight influence detected.")
                         if region.specular_highlight_detected:
@@ -420,16 +711,18 @@ if uploaded_file is not None:
 
         if skin_result.success:
             st.subheader("Top 3 Shade Recommendations")
-            try:
-                catalog_df = load_shade_catalog(str(SHADE_CATALOG_PATH))
-            except (FileNotFoundError, CatalogValidationError) as exc:
-                st.error(f"Shade catalog error: {exc}")
-            else:
-                for w in catalog_df.attrs.get("warnings", []):
+            # Reuse the validated catalog selected above. Reloading the 7,000+
+            # row public catalog made every upload rerun needlessly slow.
+            if recommendation_catalog_df is not None:
+                for w in recommendation_catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
-                matching_lab = skin_result.foundation_target_lab if skin_result.foundation_target_active else skin_result.lab
-                matches = match_shades(np.array(matching_lab), catalog_df, top_k=TOP_K_SHADES)
+                matches = (
+                    consensus_result.matches
+                    if consensus_result is not None
+                    and consensus_result.success
+                    else analysis.matches
+                )
 
                 if not matches:
                     st.error("No shades available to recommend.")
@@ -440,10 +733,7 @@ if uploaded_file is not None:
                             f"showing all available instead of {TOP_K_SHADES}."
                         )
 
-                    quality_report = build_quality_report(
-                        skin_result, face_result, matches, lighting_quality
-                    )
-                    matches = compute_confidence(matches, quality_report)
+                    quality_report = analysis.quality_report
 
                     for w in quality_report.warnings:
                         st.warning(w)
@@ -454,6 +744,10 @@ if uploaded_file is not None:
                             st.image(make_skin_swatch(match.rgb), width=150)
                             st.markdown(f"**#{match.rank}: {match.shade_name}**")
                             st.caption(f"Product: {match.product or 'unknown'}")
+                            st.caption(
+                                f"Product type: {match.product_type.replace('_', ' ')} · "
+                                f"catalog evidence {match.catalog_quality_score:.0%}"
+                            )
                             if match.product_variants:
                                 variant_products = [
                                     v.get("product")
@@ -465,6 +759,25 @@ if uploaded_file is not None:
                                     st.caption(
                                         "Also available in: "
                                         + ", ".join(unique_variant_products[:3])
+                                    )
+                            if match.shade_family_size > 1:
+                                family_alternatives = (
+                                    match.shade_family_alternatives or []
+                                )
+                                alternative_labels = [
+                                    f"{item.get('brand', 'Unknown')} "
+                                    f"{item.get('shade_name', 'Unknown')}"
+                                    for item in family_alternatives[:3]
+                                ]
+                                st.caption(
+                                    f"Perceptual shade family: "
+                                    f"{match.shade_family_size} near-equivalent "
+                                    "catalog colors."
+                                )
+                                if alternative_labels:
+                                    st.caption(
+                                        "Closest family alternatives: "
+                                        + ", ".join(alternative_labels)
                                     )
                             st.caption(f"{match.brand} · {match.hex}")
                             st.metric("Match confidence", f"{match.confidence:.0%}")
@@ -478,6 +791,65 @@ if uploaded_file is not None:
                                     f"separation {match.confidence_breakdown['top_shade_separation_contribution']:.2f}."
                                 )
                             st.caption(f"Delta E (CIEDE2000): {match.delta_e:.2f}")
+                            if match.distribution_delta_e is not None:
+                                st.caption(
+                                    "Distribution-aware ranking Delta E: "
+                                    f"{match.distribution_delta_e:.2f}"
+                                )
+                            if match.recommendation_stability is not None:
+                                st.caption(
+                                    f"Exact-product bootstrap stability: Top 1 {match.recommendation_stability:.0%} · "
+                                    f"Top 3 {match.top3_stability:.0%} · "
+                                    f"90th-percentile Delta E {match.delta_e_p90:.1f}"
+                                )
+                            if match.lighting_recommendation_stability is not None:
+                                st.caption(
+                                    "Exact-product lighting stability: "
+                                    f"Top 1 {match.lighting_recommendation_stability:.0%} · "
+                                    f"Top 3 {match.lighting_top3_stability:.0%} · "
+                                    f"90th-percentile Delta E {match.lighting_delta_e_p90:.1f}"
+                                )
+                            if (
+                                match.recommendation_family_stability is not None
+                                and match.top3_family_stability is not None
+                                and match.lighting_family_stability is not None
+                                and match.lighting_top3_family_stability is not None
+                            ):
+                                st.caption(
+                                    "Shade-family stability: "
+                                    f"bootstrap Top 1 {match.recommendation_family_stability:.0%} · "
+                                    f"Top 3 {match.top3_family_stability:.0%}; "
+                                    f"lighting Top 1 {match.lighting_family_stability:.0%} · "
+                                    f"Top 3 {match.lighting_top3_family_stability:.0%}."
+                                )
+                                exact_scores = [
+                                    score
+                                    for score in (
+                                        match.recommendation_stability,
+                                        match.lighting_recommendation_stability,
+                                    )
+                                    if score is not None
+                                ]
+                                family_scores = [
+                                    score
+                                    for score in (
+                                        match.recommendation_family_stability,
+                                        match.lighting_family_stability,
+                                    )
+                                    if score is not None
+                                ]
+                                if (
+                                    exact_scores
+                                    and family_scores
+                                    and min(exact_scores) < 0.50
+                                    and max(family_scores) >= 0.65
+                                ):
+                                    st.warning(
+                                        "The color family is more stable than the "
+                                        "exact product. Treat this SKU as one "
+                                        "candidate within a near-equivalent shade "
+                                        "family, not as a uniquely verified product."
+                                    )
                             if match.undertone or match.depth:
                                 st.caption(
                                     f"Undertone: {match.undertone or '—'} · Depth: {match.depth or '—'}"
@@ -491,7 +863,12 @@ if uploaded_file is not None:
                             if match.depth_sanity_note:
                                 st.caption(match.depth_sanity_note)
                             explanation = build_explanation(
-                                match, skin_result, quality_report, match.rank, matches
+                                match,
+                                skin_result,
+                                quality_report,
+                                match.rank,
+                                matches,
+                                readiness=recommendation_readiness,
                             )
                             st.caption(explanation)
 else:

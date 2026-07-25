@@ -25,6 +25,9 @@ PUBLIC_CATALOG_LIMITATION = (
     "from real applied foundation due to lighting, display calibration, brand image "
     "processing, oxidation, and skin texture."
 )
+FOUNDATION_ONLY_SCOPE = "foundation_only"
+ALL_BASE_SCOPE = "all_base"
+FOUNDATION_ONLY_PRODUCT_TYPES = {"foundation", "stick", "powder"}
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,94 @@ def _valid_rgb_component(value) -> bool:
     except (TypeError, ValueError):
         return False
     return 0 <= v <= 255 and not np.isnan(v)
+
+
+def classify_product_type(product) -> str:
+    text = "" if product is None or pd.isna(product) else str(product).casefold()
+    normalized = re.sub(r"[_/|-]+", " ", text)
+    if re.search(r"(?:^|[^a-z])(bb|cc)\+?(?=[^a-z]|$)", normalized) or any(
+        phrase in normalized
+        for phrase in (
+            "beauty balm",
+            "blemish balm",
+            "color correcting cream",
+            "colour correcting cream",
+        )
+    ):
+        return "bb_cc"
+    if (
+        "tinted moisturizer" in normalized
+        or "tinted moisturiser" in normalized
+    ):
+        return "tinted_moisturizer"
+    if "concealer" in normalized:
+        return "concealer_hybrid"
+    if (
+        "skin tint" in normalized
+        or "tinted serum" in normalized
+        or "complexion tint" in normalized
+        or ("tint" in normalized and "foundation" not in normalized)
+    ):
+        return "tint"
+    if "powder" in normalized:
+        return "powder"
+    if "cushion" in normalized:
+        return "cushion"
+    if "stick" in normalized:
+        return "stick"
+    if any(
+        term in normalized
+        for term in ("foundation", "base", "complexion", "teint")
+    ):
+        return "foundation"
+    return "other_base"
+
+
+def filter_catalog_by_product_scope(
+    catalog_df: pd.DataFrame,
+    scope: str = FOUNDATION_ONLY_SCOPE,
+) -> pd.DataFrame:
+    """Return eligible products without changing shade rows or Lab values."""
+    if scope == ALL_BASE_SCOPE:
+        return catalog_df
+    if scope != FOUNDATION_ONLY_SCOPE:
+        raise CatalogValidationError(f"Unknown product scope: {scope}")
+    if "product_type" not in catalog_df:
+        raise CatalogValidationError(
+            "Catalog must be normalized before product-scope filtering."
+        )
+    filtered = catalog_df[
+        catalog_df["product_type"].isin(FOUNDATION_ONLY_PRODUCT_TYPES)
+    ].copy().reset_index(drop=True)
+    filtered.attrs.update(catalog_df.attrs)
+    filtered.attrs["product_scope"] = scope
+    filtered.attrs["unfiltered_count"] = len(catalog_df)
+    filtered.attrs["valid_count"] = len(filtered)
+    if filtered.empty:
+        raise CatalogValidationError(
+            "No genuine foundation, stick, or powder products were found."
+        )
+    return filtered
+
+
+def catalog_quality_score(row: pd.Series) -> float:
+    """Score metadata completeness without altering the catalog color."""
+    score = 0.50
+    product = row.get("product")
+    if product is not None and not pd.isna(product) and str(product).strip().casefold() not in {"", "unknown"}:
+        score += 0.15
+    source_url = row.get("source_url")
+    if source_url is not None and not pd.isna(source_url) and str(source_url).strip():
+        score += 0.10
+    undertone = row.get("undertone")
+    if undertone is not None and not pd.isna(undertone) and str(undertone).strip().casefold() not in {"", "unknown"}:
+        score += 0.10
+    depth = row.get("depth")
+    if depth is not None and not pd.isna(depth) and str(depth).strip().casefold() not in {"", "unknown"}:
+        score += 0.10
+    if classify_product_type(product) != "other_base":
+        score += 0.05
+    return float(np.clip(score, 0.0, 1.0))
 
 
 def catalog_definitions(
@@ -189,6 +280,8 @@ def load_shade_catalog(
     catalog_df["lab_l"] = lab_array[:, 0]
     catalog_df["lab_a"] = lab_array[:, 1]
     catalog_df["lab_b"] = lab_array[:, 2]
+    catalog_df["product_type"] = catalog_df["product"].map(classify_product_type)
+    catalog_df["catalog_quality_score"] = catalog_df.apply(catalog_quality_score, axis=1)
 
     _catalog_attrs(
         catalog_df=catalog_df,

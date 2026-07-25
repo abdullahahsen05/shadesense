@@ -109,8 +109,10 @@ def _side_jaw_mask(
     sign = -1.0 if side == "left" else 1.0
     mid_y = (upper_y + lower_y) / 2.0
     outer_x = _x_at_y(oval_pts, mid_y, side, face_center_x + sign * 0.44 * face_width)
-    inner_upper_x = face_center_x + sign * 0.26 * face_width
-    inner_lower_x = face_center_x + sign * 0.20 * face_width
+    # Keep the band lateral. Moving the lower inner edge toward the centre
+    # reintroduces the central chin, lip shadow, and beard-growth zone.
+    inner_upper_x = face_center_x + sign * 0.28 * face_width
+    inner_lower_x = face_center_x + sign * 0.24 * face_width
     points = np.array(
         [
             [inner_upper_x, upper_y],
@@ -121,6 +123,271 @@ def _side_jaw_mask(
         dtype=np.float64,
     )
     return _mask_from_points(points, image_shape)
+
+
+def _inset_region_mask(mask: np.ndarray, face_width: float, strength: float = 0.006) -> np.ndarray:
+    """Inset mask boundaries using a face-relative margin.
+
+    Landmark polygons can touch hair, facial-feature, or background edges.
+    A small scale-aware erosion is more consistent than a fixed pixel margin
+    across phone images of different resolutions.
+    """
+    radius = int(np.clip(round(face_width * strength), 1, 5))
+    kernel_size = radius * 2 + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    eroded = cv2.erode(mask, kernel, iterations=1)
+    return eroded if np.any(eroded) else mask
+
+
+def _expanded_eye_zone(landmarks, image_shape, face_width: float, face_height: float) -> np.ndarray:
+    """Return a conservative glasses/reflection exclusion band."""
+    h, w = image_shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    eye_points = _pts(landmarks, EYE_INDICES)
+    if len(eye_points) < MIN_POLYGON_POINTS:
+        return mask
+    center_x = float(np.median(eye_points[:, 0]))
+    eye_groups = [
+        eye_points[eye_points[:, 0] < center_x],
+        eye_points[eye_points[:, 0] >= center_x],
+    ]
+    for group in eye_groups:
+        if len(group) < MIN_POLYGON_POINTS:
+            continue
+        x0 = int(
+            np.clip(np.min(group[:, 0]) - 0.04 * face_width, 0, w - 1)
+        )
+        x1 = int(
+            np.clip(np.max(group[:, 0]) + 0.04 * face_width, 0, w - 1)
+        )
+        y0 = int(
+            np.clip(np.min(group[:, 1]) - 0.03 * face_height, 0, h - 1)
+        )
+        # Keep a lower-lens safety margin without discarding the middle and
+        # lower cheek evidence that stabilizes depth in close phone captures.
+        y1 = int(
+            np.clip(np.max(group[:, 1]) + 0.09 * face_height, 0, h - 1)
+        )
+        if x1 > x0 and y1 > y0:
+            mask[y0 : y1 + 1, x0 : x1 + 1] = 255
+    return mask
+
+
+def _eyewear_features(
+    image_rgb: np.ndarray,
+    landmarks,
+    face_width: float,
+    face_height: float,
+) -> dict[str, float]:
+    """Measure bilateral lens color and a dark/edged glasses bridge.
+
+    Whole-band edge density was diluted by skin pixels in real phone photos.
+    Per-eye reflection evidence plus the narrow bridge between the eyes is
+    more sensitive to frames while avoiding hair and most eyebrow edges.
+    """
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    edges = cv2.Canny(gray, 40, 120)
+    eye_points = _pts(landmarks, EYE_INDICES)
+    if len(eye_points) < 6:
+        return {
+            "eye_zone_edge_density": 0.0,
+            "eye_zone_reflection_ratio": 0.0,
+            "eyewear_bridge_edge_density": 0.0,
+            "eyewear_bridge_dark_ratio": 0.0,
+        }
+
+    center_x = float(np.median(eye_points[:, 0]))
+    groups = [
+        eye_points[eye_points[:, 0] < center_x],
+        eye_points[eye_points[:, 0] >= center_x],
+    ]
+    groups = [group for group in groups if len(group) >= 3]
+    if len(groups) != 2:
+        return {
+            "eye_zone_edge_density": 0.0,
+            "eye_zone_reflection_ratio": 0.0,
+            "eyewear_bridge_edge_density": 0.0,
+            "eyewear_bridge_dark_ratio": 0.0,
+        }
+    groups.sort(key=lambda group: float(np.mean(group[:, 0])))
+
+    h, w = gray.shape
+    edge_densities = []
+    reflection_ratios = []
+    boxes = []
+    colored_glare = (
+        (hsv[:, :, 2] > 80)
+        & (hsv[:, :, 1] > 45)
+        & (hsv[:, :, 0] >= 35)
+        & (hsv[:, :, 0] <= 100)
+    )
+    neutral_glare = (hsv[:, :, 2] > 220) & (hsv[:, :, 1] < 70)
+    for group in groups:
+        x0 = int(np.clip(np.min(group[:, 0]) - 0.025 * face_width, 0, w - 1))
+        x1 = int(np.clip(np.max(group[:, 0]) + 0.025 * face_width, 0, w - 1))
+        y0 = int(np.clip(np.min(group[:, 1]) - 0.015 * face_height, 0, h - 1))
+        y1 = int(np.clip(np.max(group[:, 1]) + 0.08 * face_height, 0, h - 1))
+        boxes.append((x0, x1, y0, y1))
+        zone = np.zeros(gray.shape, dtype=bool)
+        if x1 > x0 and y1 > y0:
+            zone[y0 : y1 + 1, x0 : x1 + 1] = True
+        if not np.any(zone):
+            edge_densities.append(0.0)
+            reflection_ratios.append(0.0)
+            continue
+        edge_densities.append(float(np.mean(edges[zone] > 0)))
+        reflection_ratios.append(
+            float(np.mean((colored_glare | neutral_glare)[zone]))
+        )
+
+    left_box, right_box = boxes
+    bridge_x0 = left_box[1]
+    bridge_x1 = right_box[0]
+    bridge_y0 = max(left_box[2], right_box[2])
+    bridge_y1 = min(left_box[3], right_box[3])
+    bridge_edge_density = 0.0
+    bridge_dark_ratio = 0.0
+    if bridge_x1 > bridge_x0 and bridge_y1 > bridge_y0:
+        bridge_gray = gray[
+            bridge_y0 : bridge_y1 + 1, bridge_x0 : bridge_x1 + 1
+        ]
+        bridge_edges = edges[
+            bridge_y0 : bridge_y1 + 1, bridge_x0 : bridge_x1 + 1
+        ]
+        if bridge_gray.size:
+            bridge_dark_ratio = float(np.mean(bridge_gray < 85))
+            # A thin frame bridge can occupy only one or two rows, so use the
+            # strongest horizontal edge row rather than diluting it over skin.
+            bridge_edge_density = float(
+                np.max(np.mean(bridge_edges > 0, axis=1))
+            )
+
+    return {
+        "eye_zone_edge_density": float(np.mean(edge_densities)),
+        "eye_zone_reflection_ratio": float(np.max(reflection_ratios)),
+        "eyewear_bridge_edge_density": bridge_edge_density,
+        "eyewear_bridge_dark_ratio": bridge_dark_ratio,
+    }
+
+
+def refine_masks_for_capture(
+    image_rgb: np.ndarray,
+    masks: dict,
+    landmarks,
+    pose_asymmetry: float | None = None,
+) -> tuple[dict, dict]:
+    """Remove likely eyewear reflections and reduce a foreshortened cheek.
+
+    Refinement only removes pixels and falls back to the original mask if a
+    candidate edit would erase too much of a region.
+    """
+    refined = {
+        name: np.asarray(mask, dtype=np.uint8).copy()
+        for name, mask in masks.items()
+    }
+    diagnostics = {
+        "eyewear_reflection_detected": False,
+        "eye_zone_edge_density": 0.0,
+        "eye_zone_reflection_ratio": 0.0,
+        "eyewear_bridge_edge_density": 0.0,
+        "eyewear_bridge_dark_ratio": 0.0,
+        "eyewear_exclusion_applied": False,
+        "eyewear_excluded_fraction": 0.0,
+        "pose_reduced_region": None,
+        "warnings": [],
+    }
+    if image_rgb is None or image_rgb.size == 0 or not landmarks:
+        return refined, diagnostics
+
+    points = np.asarray(landmarks, dtype=np.float64)
+    face_width = max(float(np.ptp(points[:, 0])), 1.0)
+    face_height = max(float(np.ptp(points[:, 1])), 1.0)
+    eye_zone = _expanded_eye_zone(landmarks, image_rgb.shape, face_width, face_height)
+    zone_pixels = eye_zone > 0
+    if np.any(zone_pixels):
+        features = _eyewear_features(
+            image_rgb, landmarks, face_width, face_height
+        )
+        edge_density = features["eye_zone_edge_density"]
+        reflection_ratio = features["eye_zone_reflection_ratio"]
+        bridge_edge_density = features["eyewear_bridge_edge_density"]
+        bridge_dark_ratio = features["eyewear_bridge_dark_ratio"]
+        bridge_frame = (
+            bridge_edge_density > 0.075 and bridge_dark_ratio > 0.04
+        )
+        reflective_lenses = (
+            reflection_ratio > 0.035 and edge_density > 0.05
+            and bridge_edge_density > 0.055
+            and bridge_dark_ratio > 0.015
+        )
+        eyewear_detected = bool(
+            bridge_frame or reflective_lenses
+        )
+        diagnostics.update(
+            {
+                "eyewear_reflection_detected": eyewear_detected,
+                "eye_zone_edge_density": edge_density,
+                "eye_zone_reflection_ratio": reflection_ratio,
+                "eyewear_bridge_edge_density": bridge_edge_density,
+                "eyewear_bridge_dark_ratio": bridge_dark_ratio,
+            }
+        )
+        if eyewear_detected:
+            keep = cv2.bitwise_not(eye_zone)
+            original_pixels = 0
+            retained_pixels = 0
+            for name in ("left_cheek", "right_cheek"):
+                original_count = np.count_nonzero(refined[name])
+                candidate = cv2.bitwise_and(refined[name], keep)
+                candidate_count = np.count_nonzero(candidate)
+                original_pixels += original_count
+                if candidate_count >= 0.35 * max(original_count, 1):
+                    refined[name] = candidate
+                    retained_pixels += candidate_count
+                else:
+                    retained_pixels += original_count
+            excluded_fraction = 1.0 - (
+                retained_pixels / max(original_pixels, 1)
+            )
+            diagnostics["eyewear_excluded_fraction"] = float(
+                np.clip(excluded_fraction, 0.0, 1.0)
+            )
+            diagnostics["eyewear_exclusion_applied"] = bool(
+                excluded_fraction > 0.005
+            )
+            diagnostics["warnings"].append(
+                "Glasses frames or lens reflections were detected; upper-cheek "
+                "pixels underneath and beside the lenses were excluded."
+            )
+
+    if pose_asymmetry is not None and pose_asymmetry > 0.18 and len(points) > 263:
+        nose_x = float(points[1, 0])
+        left_span = abs(nose_x - float(points[33, 0]))
+        right_span = abs(float(points[263, 0]) - nose_x)
+        reduced_name = "left_cheek" if left_span < right_span else "right_cheek"
+        radius = int(np.clip(round(face_width * 0.018), 2, 10))
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
+        )
+        candidate = cv2.erode(refined[reduced_name], kernel, iterations=1)
+        if np.count_nonzero(candidate) >= 0.35 * max(
+            np.count_nonzero(refined[reduced_name]), 1
+        ):
+            refined[reduced_name] = candidate
+            diagnostics["pose_reduced_region"] = reduced_name
+            diagnostics["warnings"].append(
+                f"{reduced_name.replace('_', ' ').title()} evidence was reduced "
+                "because the cheek is foreshortened by pose."
+            )
+
+    refined["combined"] = (
+        refined["forehead"]
+        | refined["left_cheek"]
+        | refined["right_cheek"]
+        | refined["jawline"]
+    )
+    return refined, diagnostics
 
 
 def build_region_masks(image_shape, landmarks) -> dict:
@@ -174,7 +441,7 @@ def build_region_masks(image_shape, landmarks) -> dict:
     # the temples/hairline sides, stays on bare forehead skin for the vast
     # majority of hairstyles.
     forehead_bottom_y = eyebrow_y - margin_h
-    forehead_top_y_bound = eyebrow_y - 0.32 * face_height
+    forehead_top_y_bound = eyebrow_y - 0.28 * face_height
     forehead_left_x = face_center_x - 0.30 * face_width
     forehead_right_x = face_center_x + 0.30 * face_width
     forehead_rect_pts = np.array(
@@ -225,8 +492,11 @@ def build_region_masks(image_shape, landmarks) -> dict:
     # under-mouth convex hull could pick up neck shadow or the central chin
     # crease. These side bands prefer lower-cheek/side-jaw skin and leave the
     # central chin area out unless future explicit landmarks justify it.
-    jaw_upper_y = mouth_top_y + 0.04 * face_height
-    jaw_lower_y = min(mouth_bottom_y + 0.10 * face_height, chin_y - 0.08 * face_height)
+    jaw_upper_y = mouth_bottom_y + 0.025 * face_height
+    jaw_lower_y = min(
+        mouth_bottom_y + 0.11 * face_height,
+        chin_y - 0.09 * face_height,
+    )
     if jaw_lower_y > jaw_upper_y:
         jawline_mask = cv2.bitwise_or(
             _side_jaw_mask(oval_pts, face_center_x, face_width, jaw_upper_y, jaw_lower_y, "left", image_shape),
@@ -242,14 +512,32 @@ def build_region_masks(image_shape, landmarks) -> dict:
         if len(pts) >= MIN_POLYGON_POINTS:
             hull = cv2.convexHull(pts.astype(np.int32))
             cv2.fillConvexPoly(exclude_mask, hull, 255)
-    # Dilate the exclusion zone slightly for a safety margin.
-    exclude_mask = cv2.dilate(exclude_mask, np.ones((5, 5), np.uint8), iterations=1)
+    # Dilate the exclusion zone by a face-relative margin for consistent
+    # feature avoidance at different input resolutions.
+    exclude_radius = int(np.clip(round(face_width * 0.012), 2, 7))
+    exclude_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (exclude_radius * 2 + 1, exclude_radius * 2 + 1),
+    )
+    exclude_mask = cv2.dilate(exclude_mask, exclude_kernel, iterations=1)
     keep_mask = cv2.bitwise_not(exclude_mask)
 
-    forehead_mask = cv2.bitwise_and(forehead_mask, keep_mask)
-    left_cheek_mask = cv2.bitwise_and(left_cheek_mask, keep_mask)
-    right_cheek_mask = cv2.bitwise_and(right_cheek_mask, keep_mask)
-    jawline_mask = cv2.bitwise_and(jawline_mask, keep_mask)
+    forehead_mask = cv2.bitwise_and(
+        _inset_region_mask(forehead_mask, face_width, strength=0.008),
+        keep_mask,
+    )
+    left_cheek_mask = cv2.bitwise_and(
+        _inset_region_mask(left_cheek_mask, face_width),
+        keep_mask,
+    )
+    right_cheek_mask = cv2.bitwise_and(
+        _inset_region_mask(right_cheek_mask, face_width),
+        keep_mask,
+    )
+    jawline_mask = cv2.bitwise_and(
+        _inset_region_mask(jawline_mask, face_width, strength=0.005),
+        keep_mask,
+    )
 
     combined = forehead_mask | left_cheek_mask | right_cheek_mask | jawline_mask
 

@@ -7,7 +7,7 @@ def _page_text(at):
     return "\n".join(
         [
             getattr(item, "value", "")
-            for group in [at.subheader, at.markdown, at.caption, at.info]
+            for group in [at.subheader, at.markdown, at.caption, at.info, at.metric]
             for item in group
         ]
     )
@@ -50,9 +50,17 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Dominant/trusted region contribution:" in page_text
     assert "Region Stability Analysis" in page_text
     assert "Region stability score:" in page_text
-    assert "Most influential region:" in page_text
+    assert "Most sensitive leave-one-out region:" in page_text
+    assert any(
+        getattr(metric, "label", "") == "Raw region extraction score"
+        for metric in at.metric
+    )
+    assert "internal region/pixel score" in page_text
     assert "Stability summary:" in page_text
-    assert "Jawline reduction reason:" in page_text
+    assert (
+        "Side-jaw reduction reason:" in page_text
+        or "Side-jaw status:" in page_text
+    )
     assert "Final depth estimate:" in page_text
     assert "Color Correction Diagnostics" in page_text
     assert "Selected extraction source:" in page_text
@@ -76,6 +84,23 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Image Capture Quality" in page_text
     assert "Label:" in page_text
     assert "Blur metric" in page_text
+    assert "Capture & Extraction Readiness" in page_text
+    assert "Exact-product stability" in page_text
+    assert "Bootstrap uncertainty radius" in page_text
+    assert "Consensus method:" in page_text
+    assert "Perceptual outlier threshold:" in page_text
+    assert "Extraction Uncertainty" in page_text
+    assert "Bootstrap samples:" in page_text
+    assert "90th-percentile uncertainty radius:" in page_text
+    assert "Lighting Sensitivity" in page_text
+    assert "Sensitivity score:" in page_text
+    assert "90th-percentile perturbation shift:" in page_text
+    assert "Usable perturbations:" in page_text
+    assert "Product type:" in page_text
+    assert "catalog evidence" in page_text
+    assert "Distribution-aware ranking Delta E:" in page_text
+    assert "Exact-product bootstrap stability:" in page_text
+    assert "Exact-product lighting stability:" in page_text
 
 
 def test_capture_guidance_text_exists():
@@ -95,6 +120,8 @@ def test_capture_guidance_text_exists():
     assert "cheeks and jawline visible" in page_text
     assert "Color handling is automatic" in page_text
     assert "preserves original image color" in page_text
+    assert len(at.file_uploader) == 1
+    assert "neutral-card" not in page_text.lower()
 
 
 def test_extraction_mode_controls_are_not_exposed_in_ui():
@@ -106,3 +133,20 @@ def test_extraction_mode_controls_are_not_exposed_in_ui():
     assert "Extraction debug mode" not in page_text
     assert "Force original extraction" not in page_text
     assert "Force corrected extraction" not in page_text
+
+
+def test_two_uploaded_photos_render_consensus_diagnostics():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=30)
+    image_path = Path("data/sample_images/face_astronaut.png")
+    content = image_path.read_bytes()
+    at.file_uploader[0].upload("capture-one.png", content)
+    at.file_uploader[0].upload("capture-two.png", content)
+    at.run(timeout=180)
+    page_text = _page_text(at)
+
+    assert not at.error
+    assert "Multi-photo consensus" in page_text
+    assert "2 of 2 captures retained" in page_text
+    assert "Cross-photo agreement:" in page_text
+    assert len(at.table) >= 1

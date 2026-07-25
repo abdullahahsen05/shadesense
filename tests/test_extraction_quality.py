@@ -70,6 +70,7 @@ def test_extraction_quality_overall_score_stays_in_range():
         "lighting_safety",
         "color_consistency",
         "region_stability",
+        "capture_stability",
     }
 
 

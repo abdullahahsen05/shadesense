@@ -45,6 +45,24 @@ class ShadeMatch:
     extracted_depth: str | None = None
     depth_match_status: str = "unknown"
     depth_sanity_note: str | None = None
+    product_type: str = "other_base"
+    catalog_quality_score: float = 0.5
+    recommendation_stability: float | None = None
+    top3_stability: float | None = None
+    lighting_recommendation_stability: float | None = None
+    lighting_top3_stability: float | None = None
+    lighting_delta_e_p90: float | None = None
+    recommendation_family_stability: float | None = None
+    top3_family_stability: float | None = None
+    lighting_family_stability: float | None = None
+    lighting_top3_family_stability: float | None = None
+    delta_e_median: float | None = None
+    delta_e_p90: float | None = None
+    distribution_delta_e: float | None = None
+    uncertainty_adjustment: float = 0.0
+    shade_family_id: str | None = None
+    shade_family_size: int = 1
+    shade_family_alternatives: list | None = None
 
 
 DEPTH_CLOSE_DELTA_E_WINDOW = 2.0
@@ -56,8 +74,21 @@ VARIANT_DELTA_E_WINDOW = 1.5
 VARIANT_HEX_RGB_DISTANCE = 10.0
 NEAR_DUPLICATE_DELTA_E = 1.2
 DISPLAY_MIN_DELTA_E_STEPS = (1.8, 1.2, 0.6, 0.0)
-MIN_DEDUP_SCAN_ROWS = 1000
-DEDUP_SCAN_MULTIPLIER = 500
+# Candidates are already sorted by their dominant CIEDE2000 score before
+# product/variant grouping. A bounded shortlist keeps deduplication responsive
+# for large public catalogs while leaving ample room to find three distinct
+# recommendations.
+MIN_DEDUP_SCAN_ROWS = 300
+DEDUP_SCAN_MULTIPLIER = 100
+CATALOG_QUALITY_CLOSE_PENALTY = 0.20
+CONCEALER_HYBRID_CLOSE_PENALTY = 0.75
+UNCERTAINTY_LIGHT_MARGIN = 2.0
+STABILITY_SHORTLIST_SIZE = 100
+SHADE_FAMILY_DELTA_E = 2.0
+POINT_DISTANCE_WEIGHT = 0.45
+UNCERTAINTY_MEDIAN_WEIGHT = 0.40
+UNCERTAINTY_TAIL_WEIGHT = 0.15
+LIGHTING_EVIDENCE_SHARE = 0.30
 
 
 def _normalize_key_text(value) -> str:
@@ -96,11 +127,22 @@ def _shade_names_similar(a, b) -> bool:
 def _depth_distance(estimated_depth: str, catalog_depth) -> int:
     if catalog_depth is None or pd.isna(catalog_depth):
         return 0
-    return abs(DEPTH_ORDER.get(str(estimated_depth), 0) - DEPTH_ORDER.get(str(catalog_depth), DEPTH_ORDER.get(str(estimated_depth), 0)))
+    estimated_order = DEPTH_ORDER.get(str(estimated_depth))
+    catalog_order = DEPTH_ORDER.get(str(catalog_depth))
+    if estimated_order is None or catalog_order is None:
+        return 0
+    return abs(estimated_order - catalog_order)
 
 
-def _too_light_penalty(skin_l: float, shade_l: float) -> float:
-    l_gap = float(shade_l - skin_l)
+def _too_light_penalty(
+    skin_l: float,
+    shade_l: float,
+    supported_upper_l: float | None = None,
+) -> float:
+    if supported_upper_l is None:
+        l_gap = float(shade_l - skin_l)
+    else:
+        l_gap = float(shade_l - (supported_upper_l + UNCERTAINTY_LIGHT_MARGIN))
     if l_gap <= TOO_LIGHT_L_THRESHOLD:
         return 0.0
     return float(np.clip((l_gap - TOO_LIGHT_L_THRESHOLD) * TOO_LIGHT_CLOSE_PENALTY, 0.0, TOO_LIGHT_MAX_PENALTY))
@@ -123,8 +165,58 @@ def _compute_delta_e(skin_lab: np.ndarray, catalog_lab: np.ndarray) -> np.ndarra
     return np.linalg.norm(catalog_lab - np.asarray(skin_lab), axis=1)
 
 
-def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, rank: int = 0) -> ShadeMatch:
-    depth_penalty = float(ranking_scores[idx] - distances[idx])
+def _coerce_lab_samples(samples) -> np.ndarray | None:
+    if samples is None:
+        return None
+    array = np.asarray(samples, dtype=np.float64)
+    if array.ndim != 2 or array.shape[1] != 3 or len(array) == 0:
+        return None
+    finite = array[np.all(np.isfinite(array), axis=1)]
+    return finite if len(finite) else None
+
+
+def _distribution_distance_statistics(
+    catalog_lab: np.ndarray,
+    samples,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Return per-sample, median, and tail CIEDE2000 distances.
+
+    The implementation evaluates one sample against the full catalog at a
+    time, avoiding a large repeated Lab tensor for public catalogs.
+    """
+    sample_array = _coerce_lab_samples(samples)
+    if sample_array is None:
+        return None, None, None
+    sample_distances = np.vstack(
+        [_compute_delta_e(sample, catalog_lab) for sample in sample_array]
+    )
+    return (
+        sample_distances,
+        np.median(sample_distances, axis=0),
+        np.percentile(sample_distances, 90, axis=0),
+    )
+
+
+def _row_to_match(
+    row,
+    idx,
+    distances,
+    ranking_scores,
+    extracted_depth: str,
+    metadata_penalties=None,
+    median_distances=None,
+    p90_distances=None,
+    distribution_scores=None,
+    rank: int = 0,
+) -> ShadeMatch:
+    depth_penalty = (
+        float(metadata_penalties[idx]) if metadata_penalties is not None else 0.0
+    )
+    distribution_score = (
+        float(distribution_scores[idx])
+        if distribution_scores is not None
+        else float(distances[idx])
+    )
     shade_depth = row.get("depth") if pd.notna(row.get("depth")) else None
     return ShadeMatch(
         shade_id=str(row["shade_id"]),
@@ -145,6 +237,14 @@ def _row_to_match(row, idx, distances, ranking_scores, extracted_depth: str, ran
         extracted_depth=extracted_depth,
         depth_match_status=depth_match_status(extracted_depth, shade_depth),
         depth_sanity_note=depth_sanity_note(extracted_depth, shade_depth),
+        product_type=str(row.get("product_type") or "other_base"),
+        catalog_quality_score=float(row.get("catalog_quality_score", 0.5)),
+        delta_e_median=float(median_distances[idx])
+        if median_distances is not None
+        else None,
+        delta_e_p90=float(p90_distances[idx]) if p90_distances is not None else None,
+        distribution_delta_e=distribution_score,
+        uncertainty_adjustment=distribution_score - float(distances[idx]),
         rank=rank,
     )
 
@@ -227,6 +327,70 @@ def _group_ranked_candidates(candidates: list[ShadeMatch]) -> list[ShadeMatch]:
     return grouped_matches
 
 
+def _shade_family_payload(match: ShadeMatch) -> dict:
+    return {
+        "shade_id": match.shade_id,
+        "brand": match.brand,
+        "product": match.product,
+        "shade_name": match.shade_name,
+        "hex": match.hex,
+        "delta_e": match.delta_e,
+        "ranking_score": match.ranking_score,
+        "recommendation_stability": match.recommendation_stability,
+        "lighting_recommendation_stability": (
+            match.lighting_recommendation_stability
+        ),
+    }
+
+
+def _order_by_shade_family(candidates: list[ShadeMatch]) -> list[ShadeMatch]:
+    """Place one representative from each perceptual color family first.
+
+    Exact-product stability is calculated before this step. The family layer
+    therefore improves recommendation diversity without inflating confidence
+    in a particular catalog SKU.
+    """
+    if not candidates:
+        return []
+
+    families: list[list[ShadeMatch]] = []
+    for candidate in candidates:
+        family = next(
+            (
+                members
+                for members in families
+                if _lab_delta_e(candidate.lab, members[0].lab)
+                <= SHADE_FAMILY_DELTA_E
+            ),
+            None,
+        )
+        if family is None:
+            families.append([candidate])
+        else:
+            family.append(candidate)
+
+    representatives: list[ShadeMatch] = []
+    remaining_members: list[ShadeMatch] = []
+    for family_index, members in enumerate(families, start=1):
+        family_id = f"family-{family_index:03d}"
+        family_payloads = [_shade_family_payload(member) for member in members]
+        for member_index, member in enumerate(members):
+            member.shade_family_id = family_id
+            member.shade_family_size = len(members)
+            member.shade_family_alternatives = [
+                payload
+                for payload_index, payload in enumerate(family_payloads)
+                if payload_index != member_index
+            ]
+        representatives.append(members[0])
+        remaining_members.extend(members[1:])
+
+    # Representatives preserve original ranking order because families are
+    # opened by the best-ranked member. Remaining near-duplicates are retained
+    # as a fallback so small catalogs can still satisfy the Top-K contract.
+    return representatives + remaining_members
+
+
 def _select_visually_distinct_matches(candidates: list[ShadeMatch], top_k: int) -> list[ShadeMatch]:
     if top_k <= 0:
         return []
@@ -255,7 +419,92 @@ def _select_visually_distinct_matches(candidates: list[ShadeMatch], top_k: int) 
     return selected
 
 
-def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
+def _apply_uncertainty_stability(
+    candidates: list[ShadeMatch],
+    uncertainty_labs,
+) -> None:
+    if uncertainty_labs is None or not candidates:
+        return
+    samples = _coerce_lab_samples(uncertainty_labs)
+    if samples is None:
+        return
+    shortlist = candidates[:STABILITY_SHORTLIST_SIZE]
+    labs = np.asarray([candidate.lab for candidate in shortlist], dtype=np.float64)
+    sample_grid = np.repeat(samples[:, None, :], len(shortlist), axis=1)
+    catalog_grid = np.repeat(labs[None, :, :], len(samples), axis=0)
+    distances = deltaE_ciede2000(sample_grid, catalog_grid)
+    order = np.argsort(distances, axis=1)
+    for idx, candidate in enumerate(shortlist):
+        candidate.recommendation_stability = float(np.mean(order[:, 0] == idx))
+        candidate.top3_stability = float(np.mean(np.any(order[:, : min(3, len(shortlist))] == idx, axis=1)))
+        winning_labs = labs[order[:, 0]]
+        candidate_grid = np.repeat(labs[idx][None, :], len(samples), axis=0)
+        family_delta = deltaE_ciede2000(candidate_grid, winning_labs)
+        candidate.recommendation_family_stability = float(
+            np.mean(family_delta <= SHADE_FAMILY_DELTA_E)
+        )
+        top_count = min(3, len(shortlist))
+        family_top3 = []
+        for sample_index in range(len(samples)):
+            top_labs = labs[order[sample_index, :top_count]]
+            repeated = np.repeat(labs[idx][None, :], top_count, axis=0)
+            family_top3.append(
+                np.min(deltaE_ciede2000(repeated, top_labs))
+                <= SHADE_FAMILY_DELTA_E
+            )
+        candidate.top3_family_stability = float(np.mean(family_top3))
+        candidate.delta_e_median = float(np.median(distances[:, idx]))
+        candidate.delta_e_p90 = float(np.percentile(distances[:, idx], 90))
+
+
+def _apply_lighting_stability(
+    candidates: list[ShadeMatch],
+    lighting_sensitivity_labs,
+) -> None:
+    samples = _coerce_lab_samples(lighting_sensitivity_labs)
+    if samples is None or not candidates:
+        return
+    shortlist = candidates[:STABILITY_SHORTLIST_SIZE]
+    labs = np.asarray([candidate.lab for candidate in shortlist], dtype=np.float64)
+    sample_grid = np.repeat(samples[:, None, :], len(shortlist), axis=1)
+    catalog_grid = np.repeat(labs[None, :, :], len(samples), axis=0)
+    distances = deltaE_ciede2000(sample_grid, catalog_grid)
+    order = np.argsort(distances, axis=1)
+    top_count = min(3, len(shortlist))
+    for idx, candidate in enumerate(shortlist):
+        candidate.lighting_recommendation_stability = float(
+            np.mean(order[:, 0] == idx)
+        )
+        candidate.lighting_top3_stability = float(
+            np.mean(np.any(order[:, :top_count] == idx, axis=1))
+        )
+        winning_labs = labs[order[:, 0]]
+        candidate_grid = np.repeat(labs[idx][None, :], len(samples), axis=0)
+        family_delta = deltaE_ciede2000(candidate_grid, winning_labs)
+        candidate.lighting_family_stability = float(
+            np.mean(family_delta <= SHADE_FAMILY_DELTA_E)
+        )
+        family_top3 = []
+        for sample_index in range(len(samples)):
+            top_labs = labs[order[sample_index, :top_count]]
+            repeated = np.repeat(labs[idx][None, :], top_count, axis=0)
+            family_top3.append(
+                np.min(deltaE_ciede2000(repeated, top_labs))
+                <= SHADE_FAMILY_DELTA_E
+            )
+        candidate.lighting_top3_family_stability = float(np.mean(family_top3))
+        candidate.lighting_delta_e_p90 = float(
+            np.percentile(distances[:, idx], 90)
+        )
+
+
+def match_shades(
+    skin_lab,
+    catalog_df: pd.DataFrame,
+    top_k: int = 3,
+    uncertainty_labs=None,
+    lighting_sensitivity_labs=None,
+) -> list:
     """Rank catalog shades by perceptual distance to the extracted skin color.
 
     Returns up to `top_k` `ShadeMatch` entries sorted by ascending distance
@@ -267,14 +516,65 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
 
     catalog_lab = catalog_df[["lab_l", "lab_a", "lab_b"]].to_numpy(dtype=np.float64)
     distances = _compute_delta_e(skin_lab, catalog_lab)
+    (
+        uncertainty_distance_grid,
+        uncertainty_median_distances,
+        uncertainty_p90_distances,
+    ) = _distribution_distance_statistics(catalog_lab, uncertainty_labs)
+    (
+        lighting_distance_grid,
+        lighting_median_distances,
+        lighting_p90_distances,
+    ) = _distribution_distance_statistics(catalog_lab, lighting_sensitivity_labs)
     estimated_depth = estimate_depth_from_lab_l(float(np.asarray(skin_lab, dtype=np.float64)[0]))
     best_delta = float(np.min(distances))
-    ranking_scores = distances.copy()
-    if "depth" in catalog_df.columns:
-        for idx, row in catalog_df.iterrows():
-            if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
-                ranking_scores[idx] += DEPTH_TIE_PENALTY * _depth_distance(estimated_depth, row.get("depth"))
-                ranking_scores[idx] += _too_light_penalty(float(np.asarray(skin_lab, dtype=np.float64)[0]), float(row.get("lab_l")))
+    if uncertainty_distance_grid is None and lighting_distance_grid is None:
+        distribution_scores = distances.copy()
+    else:
+        if uncertainty_distance_grid is None:
+            evidence_median = lighting_median_distances
+            evidence_p90 = lighting_p90_distances
+        elif lighting_distance_grid is None:
+            evidence_median = uncertainty_median_distances
+            evidence_p90 = uncertainty_p90_distances
+        else:
+            evidence_median = (
+                (1.0 - LIGHTING_EVIDENCE_SHARE) * uncertainty_median_distances
+                + LIGHTING_EVIDENCE_SHARE * lighting_median_distances
+            )
+            evidence_p90 = (
+                (1.0 - LIGHTING_EVIDENCE_SHARE) * uncertainty_p90_distances
+                + LIGHTING_EVIDENCE_SHARE * lighting_p90_distances
+            )
+        distribution_scores = (
+            POINT_DISTANCE_WEIGHT * distances
+            + UNCERTAINTY_MEDIAN_WEIGHT * evidence_median
+            + UNCERTAINTY_TAIL_WEIGHT * evidence_p90
+        )
+    metadata_penalties = np.zeros_like(distances)
+    ranking_scores = distribution_scores.copy()
+    supported_upper_l = None
+    uncertainty_array = _coerce_lab_samples(uncertainty_labs)
+    if uncertainty_array is not None:
+        supported_upper_l = float(np.percentile(uncertainty_array[:, 0], 95))
+    for idx, row in catalog_df.iterrows():
+        if distances[idx] <= best_delta + DEPTH_CLOSE_DELTA_E_WINDOW:
+            if "depth" in catalog_df.columns:
+                metadata_penalties[idx] += DEPTH_TIE_PENALTY * _depth_distance(
+                    estimated_depth, row.get("depth")
+                )
+                metadata_penalties[idx] += _too_light_penalty(
+                    float(np.asarray(skin_lab, dtype=np.float64)[0]),
+                    float(row.get("lab_l")),
+                    supported_upper_l=supported_upper_l,
+                )
+            quality = float(row.get("catalog_quality_score", 0.5))
+            metadata_penalties[idx] += CATALOG_QUALITY_CLOSE_PENALTY * (
+                1.0 - float(np.clip(quality, 0.0, 1.0))
+            )
+            if str(row.get("product_type") or "") == "concealer_hybrid":
+                metadata_penalties[idx] += CONCEALER_HYBRID_CLOSE_PENALTY
+    ranking_scores += metadata_penalties
 
     order = np.lexsort((distances, ranking_scores))
 
@@ -282,8 +582,25 @@ def match_shades(skin_lab, catalog_df: pd.DataFrame, top_k: int = 3) -> list:
     ranked_candidates = []
     for idx in order[:dedup_scan_limit]:
         row = catalog_df.iloc[idx]
-        candidate = _row_to_match(row, idx, distances, ranking_scores, estimated_depth)
+        candidate = _row_to_match(
+            row,
+            idx,
+            distances,
+            ranking_scores,
+            estimated_depth,
+            metadata_penalties=metadata_penalties,
+            median_distances=evidence_median
+            if uncertainty_distance_grid is not None or lighting_distance_grid is not None
+            else None,
+            p90_distances=evidence_p90
+            if uncertainty_distance_grid is not None or lighting_distance_grid is not None
+            else None,
+            distribution_scores=distribution_scores,
+        )
         ranked_candidates.append(candidate)
 
     grouped_candidates = _group_ranked_candidates(ranked_candidates)
-    return _select_visually_distinct_matches(grouped_candidates, top_k)
+    _apply_uncertainty_stability(grouped_candidates, uncertainty_labs)
+    _apply_lighting_stability(grouped_candidates, lighting_sensitivity_labs)
+    family_ordered_candidates = _order_by_shade_family(grouped_candidates)
+    return _select_visually_distinct_matches(family_ordered_candidates, top_k)

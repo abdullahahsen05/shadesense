@@ -10,8 +10,11 @@ from scripts.prepare_public_catalog import (
     prepare_public_catalog,
 )
 from src.shade_catalog import (
+    FOUNDATION_ONLY_SCOPE,
     MOCK_CATALOG_KEY,
     PUBLIC_CATALOG_KEY,
+    classify_product_type,
+    filter_catalog_by_product_scope,
     load_default_catalog,
     load_shade_catalog,
 )
@@ -48,6 +51,54 @@ def test_complexion_product_filter_keeps_base_and_rejects_obvious_other_makeup()
     assert not looks_like_complexion_product("Matte Lipstick", "red")
     assert not looks_like_complexion_product("Volumizing Mascara", "black")
     assert not looks_like_complexion_product("Shimmer Eyeshadow Palette", "bronze")
+
+
+def test_product_type_parser_recognizes_real_catalog_variants():
+    assert classify_product_type("Your Skin But Better CC+ Cream") == "bb_cc"
+    assert classify_product_type("BB Cream SPF 30") == "bb_cc"
+    assert classify_product_type("Tinted Face Serum") == "tint"
+    assert classify_product_type("Skin Tint") == "tint"
+    assert (
+        classify_product_type("Foundation and Concealer Stick")
+        == "concealer_hybrid"
+    )
+    assert classify_product_type("Longwear Foundation Stick") == "stick"
+    assert classify_product_type("Pressed Foundation Powder") == "powder"
+
+
+def test_foundation_only_scope_preserves_true_foundation_forms(tmp_path):
+    path = tmp_path / "catalog.csv"
+    pd.DataFrame(
+        {
+            "shade_id": [f"S{index}" for index in range(7)],
+            "brand": ["B"] * 7,
+            "product": [
+                "Liquid Foundation",
+                "Foundation Stick",
+                "Foundation Powder",
+                "Cushion Foundation",
+                "CC+ Cream",
+                "Skin Tint",
+                "Foundation Concealer",
+            ],
+            "shade_name": [f"Shade {index}" for index in range(7)],
+            "hex": ["#AA8877"] * 7,
+        }
+    ).to_csv(path, index=False)
+    catalog = load_shade_catalog(path)
+
+    filtered = filter_catalog_by_product_scope(
+        catalog,
+        FOUNDATION_ONLY_SCOPE,
+    )
+
+    assert set(filtered["product_type"]) == {
+        "foundation",
+        "stick",
+        "powder",
+    }
+    assert len(filtered) == 3
+    assert filtered.attrs["unfiltered_count"] == 7
 
 
 def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
@@ -92,11 +143,15 @@ def test_prepare_public_catalog_with_synthetic_raw_csv(tmp_path):
         "hex",
         "undertone",
         "depth",
+        "product_type",
+        "catalog_quality_score",
         "source",
         "source_url",
     ]
     assert out.iloc[0]["hex"] == "#F1CAAA"
     assert out.iloc[0]["undertone"] == "warm"
+    assert out.iloc[0]["product_type"] == "foundation"
+    assert 0.0 <= out.iloc[0]["catalog_quality_score"] <= 1.0
     assert out.iloc[0]["source"] == SOURCE_LABEL
 
 
@@ -120,12 +175,16 @@ def test_public_catalog_loader_metadata_and_matching(tmp_path):
     assert catalog.attrs["catalog_name"] == "Public Test"
     assert catalog.attrs["source"] == SOURCE_LABEL
     assert catalog.attrs["valid_count"] == 3
+    assert list(catalog["product_type"]) == ["foundation", "foundation", "tint"]
+    assert catalog["catalog_quality_score"].between(0.0, 1.0).all()
 
     skin_lab = catalog.iloc[1][["lab_l", "lab_a", "lab_b"]].to_numpy(dtype=float)
     matches = match_shades(np.array(skin_lab), catalog, top_k=3)
     assert len(matches) == 3
     assert matches[0].product == "Foundation"
     assert matches[0].source_url == "u2"
+    assert matches[0].product_type == "foundation"
+    assert matches[0].catalog_quality_score > 0.5
 
 
 def test_default_catalog_prefers_public_and_falls_back_to_mock(tmp_path):

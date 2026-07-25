@@ -23,6 +23,7 @@ class ImageQualityResult:
     face_area_ratio: float | None = None
     pose_asymmetry: float | None = None
     color_cast_strength: float = 0.0
+    exposure_source: str = "whole image"
 
 
 def _score_label(score: float) -> str:
@@ -42,12 +43,49 @@ def _blur_score(image_rgb: np.ndarray) -> tuple[float, float]:
     return score, variance
 
 
-def _exposure_score(image_rgb: np.ndarray) -> tuple[float, float, float]:
+def _exposure_pixels(
+    image_rgb: np.ndarray,
+    masks: dict | np.ndarray | None = None,
+) -> tuple[np.ndarray, str]:
+    """Return luminance pixels from facial skin regions when available."""
     gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
-    under_ratio = float(np.mean(gray < 35))
-    over_ratio = float(np.mean(gray > 235))
+    if masks is None:
+        return gray.reshape(-1), "whole image"
+
+    if isinstance(masks, dict):
+        mask = masks.get("combined")
+        if mask is None:
+            region_masks = [
+                np.asarray(masks[name], dtype=np.uint8)
+                for name in ("forehead", "left_cheek", "right_cheek", "jawline")
+                if name in masks
+            ]
+            if region_masks:
+                mask = np.bitwise_or.reduce(region_masks)
+    else:
+        mask = masks
+
+    if mask is None:
+        return gray.reshape(-1), "whole image"
+    mask_array = np.asarray(mask)
+    if mask_array.shape != gray.shape:
+        return gray.reshape(-1), "whole image"
+    selected = gray[mask_array > 0]
+    # Very small masks are not representative enough to replace the fallback.
+    if selected.size < 64:
+        return gray.reshape(-1), "whole image"
+    return selected, "facial skin regions"
+
+
+def _exposure_score(
+    image_rgb: np.ndarray,
+    masks: dict | np.ndarray | None = None,
+) -> tuple[float, float, float, str]:
+    pixels, source = _exposure_pixels(image_rgb, masks)
+    under_ratio = float(np.mean(pixels < 35))
+    over_ratio = float(np.mean(pixels > 235))
     score = 100.0 - 140.0 * under_ratio - 160.0 * over_ratio
-    return float(np.clip(score, 0.0, 100.0)), under_ratio, over_ratio
+    return float(np.clip(score, 0.0, 100.0)), under_ratio, over_ratio, source
 
 
 def _face_size_score(image_shape: tuple, landmarks: list | None) -> tuple[float, float | None]:
@@ -108,7 +146,11 @@ def _color_cast_score(image_rgb: np.ndarray) -> tuple[float, float]:
     return score, cast_strength
 
 
-def analyze_image_quality(image_rgb: np.ndarray, landmarks: list | None = None) -> ImageQualityResult:
+def analyze_image_quality(
+    image_rgb: np.ndarray,
+    landmarks: list | None = None,
+    masks: dict | np.ndarray | None = None,
+) -> ImageQualityResult:
     """Return lightweight image-level quality diagnostics."""
     if image_rgb is None or image_rgb.size == 0:
         return ImageQualityResult(
@@ -124,7 +166,9 @@ def analyze_image_quality(image_rgb: np.ndarray, landmarks: list | None = None) 
         )
 
     blur_score, blur_metric = _blur_score(image_rgb)
-    exposure_score, under_ratio, over_ratio = _exposure_score(image_rgb)
+    exposure_score, under_ratio, over_ratio, exposure_source = _exposure_score(
+        image_rgb, masks
+    )
     face_size_score, face_area_ratio = _face_size_score(image_rgb.shape, landmarks)
     pose_score, pose_asymmetry = _pose_score(landmarks)
     color_cast_score, cast_strength = _color_cast_score(image_rgb)
@@ -147,7 +191,8 @@ def analyze_image_quality(image_rgb: np.ndarray, landmarks: list | None = None) 
     reasons.extend(
         [
             f"Blur metric {blur_metric:.1f}; blur score {blur_score:.0f}/100.",
-            f"Underexposed pixels {under_ratio:.1%}; overexposed pixels {over_ratio:.1%}.",
+            f"Underexposed pixels {under_ratio:.1%}; overexposed pixels "
+            f"{over_ratio:.1%}, measured on {exposure_source}.",
             "Face size score unavailable without landmarks."
             if face_area_ratio is None
             else f"Face area covers {face_area_ratio:.1%} of the image.",
@@ -185,4 +230,5 @@ def analyze_image_quality(image_rgb: np.ndarray, landmarks: list | None = None) 
         face_area_ratio=face_area_ratio,
         pose_asymmetry=pose_asymmetry,
         color_cast_strength=cast_strength,
+        exposure_source=exposure_source,
     )
