@@ -290,12 +290,12 @@ def calibration_payload(
     thresholds: ReadinessThresholds,
     evidence: dict,
     *,
-    baseline_run: str,
+    evaluation_run: str,
     manifest_sha256: str,
 ) -> dict:
     return {
         "source": thresholds.source,
-        "baseline_run": baseline_run,
+        "evaluation_run": evaluation_run,
         "manifest_sha256": manifest_sha256,
         "thresholds": asdict(thresholds),
         "evidence": evidence,

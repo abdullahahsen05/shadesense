@@ -1,5 +1,5 @@
 {
-  "baseline_run": "v2-color-catalog",
+  "evaluation_run": "v2-color-catalog",
   "evidence": {
     "development": {
       "count": 67,
