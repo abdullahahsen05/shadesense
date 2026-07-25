@@ -56,10 +56,25 @@ def _patch_stability_score(skin_result) -> float:
 
 def _lighting_safety_score(lighting_quality, extraction_selection) -> float:
     lighting_score = float(getattr(lighting_quality, "score", 1.0)) * 100.0
-    chroma_score = float(getattr(extraction_selection, "chroma_preservation_score", 1.0)) * 100.0
-    lab_diff = float(getattr(extraction_selection, "lab_difference", 0.0))
-    lab_safety = _clip_score(100.0 - max(lab_diff - 4.0, 0.0) * 4.0)
     selected_source = getattr(extraction_selection, "selected_source", "original")
+    if selected_source == "original":
+        # A rejected correction is not uncertainty in the preserved pixels.
+        # Capture lighting is already represented by ``lighting_score``.
+        chroma_score = 100.0
+        lab_safety = 100.0
+    else:
+        chroma_score = (
+            float(
+                getattr(
+                    extraction_selection,
+                    "chroma_preservation_score",
+                    1.0,
+                )
+            )
+            * 100.0
+        )
+        lab_diff = float(getattr(extraction_selection, "lab_difference", 0.0))
+        lab_safety = _clip_score(100.0 - max(lab_diff - 4.0, 0.0) * 4.0)
     color_preservation_bonus = 5.0 if selected_source == "original" and lighting_score >= 85 else 0.0
     return _clip_score(0.55 * lighting_score + 0.25 * chroma_score + 0.20 * lab_safety + color_preservation_bonus)
 
