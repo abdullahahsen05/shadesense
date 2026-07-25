@@ -101,6 +101,12 @@ def _finalize(
     )
     if records.empty:
         return
+    records = records.drop_duplicates("benchmark_id", keep="last")
+    if not recommendations.empty:
+        recommendations = recommendations.drop_duplicates(
+            ["benchmark_id", "rank"],
+            keep="last",
+        )
     records.to_csv(output_dir / "per_image_results.csv", index=False)
     recommendations.to_csv(
         output_dir / "recommendations.csv",
@@ -235,7 +241,6 @@ def main() -> int:
                 elapsed_seconds=elapsed,
                 error=error,
             )
-            _append_jsonl(results_jsonl, record)
             if analysis is not None:
                 for recommendation in recommendation_records(row, analysis):
                     _append_jsonl(
@@ -249,6 +254,10 @@ def main() -> int:
                         / "debug_overlays"
                         / f"{benchmark_id}.jpg",
                     )
+            # The result row is the completion marker and is written last.
+            # If interruption occurs earlier, resume safely reprocesses the
+            # image; finalization de-duplicates any recommendation rows.
+            _append_jsonl(results_jsonl, record)
 
             done = len(completed) + position
             rate = (time.perf_counter() - started) / max(position, 1)
