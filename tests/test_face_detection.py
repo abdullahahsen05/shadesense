@@ -24,6 +24,12 @@ def test_no_face_image_fails_gracefully():
     assert result.error is not None
 
 
+def test_relaxed_face_fallback_does_not_create_cat_false_positive():
+    result = detect_face_landmarks(_load("no_face_cat.png"))
+    assert not result.success
+    assert not any("lower-confidence" in warning for warning in result.warnings)
+
+
 def test_multi_face_image_warns_and_selects_one():
     result = detect_face_landmarks(_load("multi_face.png"))
     assert result.success

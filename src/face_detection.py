@@ -27,13 +27,17 @@ class FaceDetectionResult:
     error: str | None = None
 
 
-_landmarker = None
+_landmarkers = {}
 
 
-def _get_landmarker(num_faces: int = 5):
+def _get_landmarker(
+    num_faces: int = 5,
+    *,
+    relaxed: bool = False,
+):
     """Lazily create and cache a FaceLandmarker instance."""
-    global _landmarker
-    if _landmarker is None:
+    key = (num_faces, relaxed)
+    if key not in _landmarkers:
         if not MODEL_PATH.exists():
             raise FileNotFoundError(
                 f"Face landmarker model not found at {MODEL_PATH}. "
@@ -42,12 +46,12 @@ def _get_landmarker(num_faces: int = 5):
         options = vision.FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
             num_faces=num_faces,
-            min_face_detection_confidence=0.5,
-            min_face_presence_confidence=0.5,
+            min_face_detection_confidence=0.25 if relaxed else 0.5,
+            min_face_presence_confidence=0.35 if relaxed else 0.5,
             min_tracking_confidence=0.5,
         )
-        _landmarker = vision.FaceLandmarker.create_from_options(options)
-    return _landmarker
+        _landmarkers[key] = vision.FaceLandmarker.create_from_options(options)
+    return _landmarkers[key]
 
 
 def _select_face(faces_px: list, image_shape: tuple) -> int:
@@ -87,9 +91,16 @@ def detect_face_landmarks(image_rgb: np.ndarray) -> FaceDetectionResult:
         )
 
     try:
-        landmarker = _get_landmarker()
         mp_image = MPImage(image_format=ImageFormat.SRGB, data=np.ascontiguousarray(image_rgb))
-        result = landmarker.detect(mp_image)
+        result = _get_landmarker().detect(mp_image)
+        if not result.face_landmarks:
+            relaxed_result = _get_landmarker(relaxed=True).detect(mp_image)
+            if relaxed_result.face_landmarks:
+                result = relaxed_result
+                warnings.append(
+                    "Face was recovered with the lower-confidence angled-face "
+                    "fallback; extraction confidence is reduced."
+                )
     except Exception as exc:  # pragma: no cover - defensive against runtime/model errors
         return FaceDetectionResult(
             success=False,

@@ -59,6 +59,8 @@ def _face_quality_score(face_warnings: list) -> float:
             score -= 0.25
         if "small" in lower:
             score -= 0.25
+        if "lower-confidence" in lower:
+            score -= 0.20
     return float(np.clip(score, 0.2, 1.0))
 
 
