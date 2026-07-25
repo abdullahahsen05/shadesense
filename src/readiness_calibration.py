@@ -223,14 +223,21 @@ def calibrate_readiness_thresholds(
         false_ready = metrics["false_ready_rate"] or 0.0
         objective = (
             6.0 * false_ready
-            + 0.5 * (1.0 - usable_ready)
-            + max(0.20 - usable_ready, 0.0) * 3.0
+            + max(0.05 - usable_ready, 0.0) * 3.0
         )
         tie_break = (
             objective,
             false_ready,
-            -usable_ready,
             abs(ready_score - default.ready_score),
+            abs(
+                ready_max_uncertainty
+                - default.ready_max_uncertainty
+            ),
+            abs(
+                ready_max_sensitivity
+                - default.ready_max_sensitivity
+            ),
+            -usable_ready,
         )
         if best_ready is None or tie_break < best_ready[0]:
             best_ready = (tie_break, candidate)
