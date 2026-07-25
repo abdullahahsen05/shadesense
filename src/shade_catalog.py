@@ -25,6 +25,9 @@ PUBLIC_CATALOG_LIMITATION = (
     "from real applied foundation due to lighting, display calibration, brand image "
     "processing, oxidation, and skin texture."
 )
+FOUNDATION_ONLY_SCOPE = "foundation_only"
+ALL_BASE_SCOPE = "all_base"
+FOUNDATION_ONLY_PRODUCT_TYPES = {"foundation", "stick", "powder"}
 
 
 @dataclass(frozen=True)
@@ -68,23 +71,70 @@ def _valid_rgb_component(value) -> bool:
 
 def classify_product_type(product) -> str:
     text = "" if product is None or pd.isna(product) else str(product).casefold()
-    if "bb " in f"{text} " or "cc " in f"{text} " or "bb cream" in text or "cc cream" in text:
+    normalized = re.sub(r"[_/|-]+", " ", text)
+    if re.search(r"(?:^|[^a-z])(bb|cc)\+?(?=[^a-z]|$)", normalized) or any(
+        phrase in normalized
+        for phrase in (
+            "beauty balm",
+            "blemish balm",
+            "color correcting cream",
+            "colour correcting cream",
+        )
+    ):
         return "bb_cc"
-    if "tinted moisturizer" in text or "tinted moisturiser" in text:
+    if (
+        "tinted moisturizer" in normalized
+        or "tinted moisturiser" in normalized
+    ):
         return "tinted_moisturizer"
-    if "skin tint" in text or ("tint" in text and "foundation" not in text):
-        return "tint"
-    if "powder" in text:
-        return "powder"
-    if "cushion" in text:
-        return "cushion"
-    if "stick" in text:
-        return "stick"
-    if "concealer" in text:
+    if "concealer" in normalized:
         return "concealer_hybrid"
-    if any(term in text for term in ("foundation", "base", "complexion", "teint")):
+    if (
+        "skin tint" in normalized
+        or "tinted serum" in normalized
+        or "complexion tint" in normalized
+        or ("tint" in normalized and "foundation" not in normalized)
+    ):
+        return "tint"
+    if "powder" in normalized:
+        return "powder"
+    if "cushion" in normalized:
+        return "cushion"
+    if "stick" in normalized:
+        return "stick"
+    if any(
+        term in normalized
+        for term in ("foundation", "base", "complexion", "teint")
+    ):
         return "foundation"
     return "other_base"
+
+
+def filter_catalog_by_product_scope(
+    catalog_df: pd.DataFrame,
+    scope: str = FOUNDATION_ONLY_SCOPE,
+) -> pd.DataFrame:
+    """Return eligible products without changing shade rows or Lab values."""
+    if scope == ALL_BASE_SCOPE:
+        return catalog_df
+    if scope != FOUNDATION_ONLY_SCOPE:
+        raise CatalogValidationError(f"Unknown product scope: {scope}")
+    if "product_type" not in catalog_df:
+        raise CatalogValidationError(
+            "Catalog must be normalized before product-scope filtering."
+        )
+    filtered = catalog_df[
+        catalog_df["product_type"].isin(FOUNDATION_ONLY_PRODUCT_TYPES)
+    ].copy().reset_index(drop=True)
+    filtered.attrs.update(catalog_df.attrs)
+    filtered.attrs["product_scope"] = scope
+    filtered.attrs["unfiltered_count"] = len(catalog_df)
+    filtered.attrs["valid_count"] = len(filtered)
+    if filtered.empty:
+        raise CatalogValidationError(
+            "No genuine foundation, stick, or powder products were found."
+        )
+    return filtered
 
 
 def catalog_quality_score(row: pd.Series) -> float:

@@ -9,13 +9,16 @@ from src.analysis_pipeline import analyze_rgb_image
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
 from src.extraction_summary import build_skin_extraction_summary
-from src.image_io import open_rgb_image
+from src.image_io import open_rgb_image_with_metadata
 from src.shade_catalog import (
+    ALL_BASE_SCOPE,
+    FOUNDATION_ONLY_SCOPE,
     MOCK_CATALOG_KEY,
     PUBLIC_CATALOG_KEY,
     PUBLIC_CATALOG_LIMITATION,
     CatalogValidationError,
     catalog_definitions,
+    filter_catalog_by_product_scope,
     load_default_catalog,
     load_named_catalog,
 )
@@ -72,8 +75,27 @@ except (FileNotFoundError, CatalogValidationError) as exc:
     st.error(f"Selected shade catalog error: {exc}")
     st.stop()
 
+product_scope = st.selectbox(
+    "Recommendation product scope",
+    [FOUNDATION_ONLY_SCOPE, ALL_BASE_SCOPE],
+    format_func=lambda value: (
+        "Foundation only (liquid, stick, and powder)"
+        if value == FOUNDATION_ONLY_SCOPE
+        else "All base products (includes cushions, BB/CC, and tints)"
+    ),
+)
+try:
+    recommendation_catalog_df = filter_catalog_by_product_scope(
+        catalog_df,
+        product_scope,
+    )
+except CatalogValidationError as exc:
+    st.error(f"Product scope error: {exc}")
+    st.stop()
+
 st.caption(
     f"Selected catalog: {catalog_df.attrs.get('catalog_name', 'unknown')} | "
+    f"{len(recommendation_catalog_df)} eligible of "
     f"{catalog_df.attrs.get('valid_count', len(catalog_df))} shades | "
     f"Source: {catalog_df.attrs.get('source', 'unknown')}"
 )
@@ -96,13 +118,14 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    image = open_rgb_image(uploaded_file)
+    image, image_color_metadata = open_rgb_image_with_metadata(uploaded_file)
     image_rgb = np.array(image)
     analysis = analyze_rgb_image(
         image_rgb,
-        catalog_df,
+        recommendation_catalog_df,
         extraction_mode=extraction_mode,
         top_k=TOP_K_SHADES,
+        image_color_metadata=image_color_metadata.as_dict(),
     )
 
     col1, col2 = st.columns(2)
@@ -115,6 +138,13 @@ if uploaded_file is not None:
                 f"{analysis.image_rgb.shape[1]}x{analysis.image_rgb.shape[0]}px "
                 "copy for stable runtime and resolution-independent sampling."
             )
+        if image_color_metadata.icc_converted_to_srgb:
+            st.caption(
+                "Embedded color profile converted to sRGB: "
+                f"{image_color_metadata.source_profile_description}."
+            )
+        for warning in image_color_metadata.warnings:
+            st.warning(warning)
 
     face_result = analysis.face_result
 
@@ -545,8 +575,8 @@ if uploaded_file is not None:
             st.subheader("Top 3 Shade Recommendations")
             # Reuse the validated catalog selected above. Reloading the 7,000+
             # row public catalog made every upload rerun needlessly slow.
-            if catalog_df is not None:
-                for w in catalog_df.attrs.get("warnings", []):
+            if recommendation_catalog_df is not None:
+                for w in recommendation_catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
                 matches = analysis.matches

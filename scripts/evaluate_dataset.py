@@ -34,7 +34,12 @@ from src.evaluation_report import (
     write_metrics_json,
     write_summary_markdown,
 )
-from src.shade_catalog import load_shade_catalog
+from src.shade_catalog import (
+    ALL_BASE_SCOPE,
+    FOUNDATION_ONLY_SCOPE,
+    filter_catalog_by_product_scope,
+    load_shade_catalog,
+)
 from src.visualization import draw_all_region_masks
 
 
@@ -141,6 +146,11 @@ def main() -> int:
         default=PUBLIC_SHADE_CATALOG_PATH,
     )
     parser.add_argument("--run-label", default="baseline-v1")
+    parser.add_argument(
+        "--product-scope",
+        choices=[ALL_BASE_SCOPE, FOUNDATION_ONLY_SCOPE],
+        default=ALL_BASE_SCOPE,
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-images", type=int)
     parser.add_argument("--resume", action="store_true")
@@ -180,6 +190,7 @@ def main() -> int:
         "catalog_sha256": _sha256(args.catalog),
         "dataset_root": str(args.dataset_root.resolve()),
         "seed": args.seed,
+        "product_scope": args.product_scope,
         "python": sys.version,
         "platform": platform.platform(),
         "requested_rows": int(len(manifest)),
@@ -190,7 +201,10 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    catalog = load_shade_catalog(args.catalog)
+    catalog = filter_catalog_by_product_scope(
+        load_shade_catalog(args.catalog),
+        args.product_scope,
+    )
     pending = manifest[
         ~manifest["benchmark_id"].astype(str).isin(completed)
     ]
@@ -203,8 +217,14 @@ def main() -> int:
             analysis = None
             error = None
             try:
-                image_rgb = image_store.load_rgb(row)
-                analysis = analyze_rgb_image(image_rgb, catalog)
+                image_rgb, color_metadata = image_store.load_rgb_with_metadata(
+                    row
+                )
+                analysis = analyze_rgb_image(
+                    image_rgb,
+                    catalog,
+                    image_color_metadata=color_metadata,
+                )
             except Exception as exc:  # keep the dataset run restartable
                 error = f"{type(exc).__name__}: {exc}"
                 traceback.print_exc()
