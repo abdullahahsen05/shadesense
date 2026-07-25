@@ -452,13 +452,23 @@ def build_aggregate_metrics(
                 if len(usable)
                 else None
             ),
+            "usable_ready_rate": (
+                float((usable["readiness_state"] == "ready").mean())
+                if len(usable)
+                else None
+            ),
             "recapture_reject_rate": (
                 float((recapture["readiness_state"] == "provisional").mean())
                 if len(recapture)
                 else None
             ),
-            "false_ready_rate": (
+            "false_usable_rate": (
                 float((recapture["readiness_state"] != "provisional").mean())
+                if len(recapture)
+                else None
+            ),
+            "false_ready_rate": (
+                float((recapture["readiness_state"] == "ready").mean())
                 if len(recapture)
                 else None
             ),

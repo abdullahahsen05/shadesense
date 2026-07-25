@@ -148,7 +148,9 @@ def write_summary_markdown(
         "",
         f"- Clearly labelled captures: {readiness['clear_label_count']}",
         f"- Usable-capture acceptance rate: {_percent(readiness['usable_accept_rate'])}",
+        f"- Usable-capture Ready rate: {_percent(readiness['usable_ready_rate'])}",
         f"- Recapture rejection rate: {_percent(readiness['recapture_reject_rate'])}",
+        f"- Recapture false-usable rate: {_percent(readiness['false_usable_rate'])}",
         f"- Dangerous false-ready rate: {_percent(readiness['false_ready_rate'])}",
         "",
         "These readiness labels are metadata-derived proxies, not foundation shade "
@@ -256,6 +258,7 @@ th {{ background:#eef5f1; }}
 <div class="card"><div>Face detection</div><div class="value">{_percent(metrics['face_detection_rate'])}</div></div>
 <div class="card"><div>Pipeline success</div><div class="value">{_percent(metrics['pipeline_success_rate'])}</div></div>
 <div class="card"><div>Median repeatability ΔE</div><div class="value">{_number(metrics['repeatability']['delta_e_to_reference']['median'])}</div></div>
+<div class="card"><div>Recapture false-usable</div><div class="value">{_percent(metrics['metadata_label_readiness']['false_usable_rate'])}</div></div>
 <div class="card"><div>False-ready rate</div><div class="value">{_percent(metrics['metadata_label_readiness']['false_ready_rate'])}</div></div>
 </div>
 <p class="note">MST-E and FairFace measure robustness and consistency. They do not
