@@ -60,11 +60,28 @@ def analysis_record(
         return record
 
     face = analysis.face_result
+    color_metadata = analysis.image_color_metadata or {}
     record.update(
         {
             "face_detected": bool(face.success),
             "face_count": int(face.face_count),
             "face_warnings": _json(face.warnings),
+            "embedded_icc_present": bool(
+                color_metadata.get("embedded_icc_present", False)
+            ),
+            "icc_converted_to_srgb": bool(
+                color_metadata.get("icc_converted_to_srgb", False)
+            ),
+            "assumed_srgb": bool(
+                color_metadata.get("assumed_srgb", True)
+            ),
+            "source_profile_description": color_metadata.get(
+                "source_profile_description",
+                "",
+            ),
+            "color_profile_warnings": _json(
+                color_metadata.get("warnings", [])
+            ),
         }
     )
     if not face.success:

@@ -11,7 +11,7 @@ from zipfile import ZipFile
 import numpy as np
 import pandas as pd
 
-from src.image_io import open_rgb_image
+from src.image_io import open_rgb_image_with_metadata
 
 
 MSTE_ARCHIVE = "mst-e_data.zip"
@@ -364,10 +364,18 @@ class ArchiveImageStore:
         self.close()
 
     def load_rgb(self, row: pd.Series) -> np.ndarray:
+        image, _ = self.load_rgb_with_metadata(row)
+        return image
+
+    def load_rgb_with_metadata(
+        self,
+        row: pd.Series,
+    ) -> tuple[np.ndarray, dict]:
         archive_name = str(row["archive_name"])
         archive = self._archives.get(archive_name)
         if archive is None:
             archive = ZipFile(self.dataset_root / archive_name)
             self._archives[archive_name] = archive
         data = archive.read(str(row["archive_member"]))
-        return np.asarray(open_rgb_image(BytesIO(data)))
+        image, metadata = open_rgb_image_with_metadata(BytesIO(data))
+        return np.asarray(image), metadata.as_dict()

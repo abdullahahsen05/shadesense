@@ -42,6 +42,7 @@ class ImageAnalysisResult:
     image_rgb: np.ndarray
     source_shape: tuple[int, ...]
     analysis_scale: float
+    image_color_metadata: dict
     face_result: Any
     global_lighting_quality: Any
     provisional_corrected_rgb: np.ndarray
@@ -92,6 +93,7 @@ def analyze_rgb_image(
     extraction_mode: str = "auto",
     top_k: int = TOP_K_SHADES,
     max_analysis_side: int = DEFAULT_MAX_ANALYSIS_SIDE,
+    image_color_metadata: dict | None = None,
 ) -> ImageAnalysisResult:
     """Run the full single-image pipeline used by ShadeSense AI.
 
@@ -103,6 +105,7 @@ def analyze_rgb_image(
         top_k: Number of final recommendations.
         max_analysis_side: Standardized maximum image side. Larger camera
             images are downscaled with area resampling before CV analysis.
+        image_color_metadata: Diagnostics supplied by the image decoder.
     """
     source_shape = tuple(np.asarray(image_rgb).shape)
     image_rgb, analysis_scale = normalize_analysis_resolution(
@@ -120,6 +123,7 @@ def analyze_rgb_image(
         image_rgb=image_rgb,
         source_shape=source_shape,
         analysis_scale=analysis_scale,
+        image_color_metadata=dict(image_color_metadata or {}),
         face_result=face,
         global_lighting_quality=global_lighting,
         provisional_corrected_rgb=provisional_corrected,
