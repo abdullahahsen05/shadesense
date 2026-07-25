@@ -215,12 +215,21 @@ def main() -> int:
             overlay_target.mkdir(parents=True, exist_ok=True)
             for source in source_overlays.glob("*.jpg"):
                 shutil.copy2(source, overlay_target / source.name)
+    state_analysis_commit = campaign_state.get("analysis_git_commit")
+    if state_analysis_commit:
+        analysis_commits = {str(state_analysis_commit)}
     if len(analysis_commits) != 1:
         raise RuntimeError(
             "Worker Git commits differ; refusing to merge a mixed-code run: "
             + ", ".join(sorted(analysis_commits))
         )
     analysis_git_commit = next(iter(analysis_commits))
+    if not state_analysis_commit:
+        campaign_state["analysis_git_commit"] = analysis_git_commit
+        campaign_state_path.write_text(
+            json.dumps(campaign_state, indent=2) + "\n",
+            encoding="utf-8",
+        )
     result_rows.sort(key=lambda row: order[str(row["benchmark_id"])])
     recommendation_rows.sort(
         key=lambda row: (
