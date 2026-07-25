@@ -59,6 +59,21 @@
   capped at 75% and `provisional` recommendations at 55%, while still returning
   the required Top 3 candidates.
 
+## Evaluation evidence
+
+- MST-E and FairFace do not provide measured physical foundation swatches or
+  verified wearer-to-product labels. They measure face detection, extraction
+  repeatability, robustness, recapture behavior, and recommendation stability,
+  not exact applied-product accuracy.
+- Multi-photo consensus can reduce capture variation but cannot correct three
+  consistently biased photos. Two strongly disagreeing photos remain
+  provisional because neither can safely be identified as the outlier.
+- Neutral-card calibration requires a genuinely neutral card photographed with
+  the same camera settings and illumination. A screen, white paper, or a card
+  in different lighting can introduce rather than remove color error.
+- ICC conversion honors embedded profiles, but images without a profile must be
+  treated as sRGB by convention.
+
 ## Testing
 - Automated tests use a single real photographic face (scikit-image's
   bundled `astronaut` sample, bundled offline — no network image downloads

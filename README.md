@@ -34,7 +34,8 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 
 ## Usage
 
-1. Upload a facial photo, such as JPG, PNG, or BMP.
+1. Upload one facial photo, or two to three independent photos for consensus.
+   An optional neutral gray-card reference can provide explicit white balance.
 2. The app detects the face and MediaPipe face landmarks.
 3. Cheek, forehead, and jawline masks are extracted while avoiding eyes, lips,
    eyebrows, hairline, and under-chin shadow where possible.
@@ -53,7 +54,10 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
 10. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space, with metadata affecting only close ties.
 11. Readiness incorporates post-match exact-SKU and shade-family stability.
-12. The app always shows visually distinct Top 3 candidates with readiness-aware
+12. With multiple photos, each capture is analyzed independently; a weighted
+    CIEDE2000 medoid rejects a gross whole-photo outlier and anchors consensus
+    to a real retained observation.
+13. The app always shows visually distinct Top 3 candidates with readiness-aware
     confidence, uncertainty diagnostics, and reasoning.
 
 ## Project Structure
@@ -70,19 +74,24 @@ src/                   # CV and matching logic
   face_detection.py
   region_masks.py
   color_correction.py
+  color_calibration.py
   lighting_quality.py
   image_quality.py
   skin_extraction.py
   extraction_quality.py
   capture_uncertainty.py
   multicapture_consensus.py
+  multi_photo_consensus.py
   shade_catalog.py
   shade_matcher.py
   confidence.py
   explanation.py
   visualization.py
 scripts/
+  evaluate_dataset.py
+  evaluate_multi_photo.py
   evaluate_repeatability.py
+  mask_audit_app.py
   prepare_public_catalog.py
 tests/
 docs/
@@ -92,6 +101,8 @@ docs/
 
 ```text
 image upload
+-> embedded ICC conversion to sRGB
+-> optional neutral-card channel calibration
 -> lighting and capture-quality diagnostics
 -> MediaPipe face detection and landmarks
 -> cheek / forehead / jawline masks
@@ -107,8 +118,12 @@ image upload
 
 ## Multi-Capture Repeatability
 
-For a stronger evaluation than one-photo patch consistency, run the same person
-through several independent captures:
+The Streamlit app accepts up to three face photos. Each photo runs through the
+complete pipeline independently. The consensus layer quality-weights the
+captures, chooses a real observed CIEDE2000 medoid, rejects a gross outlier only
+when there is enough evidence, and caps confidence when two captures disagree.
+
+For a small personal-photo repeatability check:
 
 ```bash
 python scripts/evaluate_repeatability.py "C:\path\to\capture-folder" --pattern "Image_*.jpeg"
@@ -119,6 +134,27 @@ Lab estimates, low-signal/recapture flags, combined uncertainty, a weighted
 CIEDE2000 medoid, whole-photo outliers, and between-capture repeatability. The
 consensus uses an actual retained observation rather than synthesizing a skin
 color between incompatible captures.
+
+For the frozen MST-E benchmark, create held-out-reference multi-photo evidence
+after the main evaluation finishes:
+
+```bash
+python scripts/evaluate_multi_photo.py \
+  --results outputs/evaluation/baseline-v1/per_image_results.csv \
+  --output outputs/evaluation/baseline-v1/multi_photo
+```
+
+The designated reference photo is excluded from consensus inputs and is used
+only to measure repeatability.
+
+## Dataset Evaluation
+
+The frozen 400-image manifest contains 250 MST-E and 150 adult FairFace
+validation images. The harness calls the same shared analysis function as the
+app and saves restartable records, subgroup metrics, charts, Markdown, and HTML.
+See `docs/evaluation_methodology.md` for dataset licenses, split rules, commands,
+and the strict boundary between robustness evidence and physical product-match
+accuracy.
 
 ## Shade Catalog
 

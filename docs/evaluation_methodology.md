@@ -90,3 +90,79 @@ python scripts/evaluate_dataset.py `
 Each run saves per-image CSV/JSONL records, Top 3 recommendations, aggregate
 and subgroup metrics, repeatability results, charts, Markdown, and a standalone
 HTML report.
+
+Run the foundation-only, ICC-aware candidate after the unchanged baseline:
+
+```powershell
+python scripts/evaluate_dataset.py `
+  --dataset-root "C:\Users\abdul\Desktop\shadesense-datasets" `
+  --manifest data/evaluation/benchmark_manifest.csv `
+  --output outputs/evaluation/v2-color-catalog `
+  --run-label v2-color-catalog `
+  --product-scope foundation_only `
+  --resume `
+  --save-overlays
+```
+
+## Readiness calibration
+
+Readiness thresholds are selected from clear MST-E development labels only.
+The optimization penalizes a false usable/ready decision on a recapture image
+four times more than rejecting a usable image, subject to a minimum usable
+acceptance rate. Locked-test metrics are reported only after the threshold is
+selected.
+
+```powershell
+python scripts/calibrate_readiness.py `
+  --results outputs/evaluation/baseline-v1/per_image_results.csv `
+  --run-config outputs/evaluation/baseline-v1/run_config.json `
+  --output data/evaluation/readiness_calibration.json
+```
+
+MST-E metadata provides capture-quality proxy labels, not foundation shade
+ground truth. Calibration therefore improves recapture safety, not proof of
+physical product accuracy.
+
+## Failure-driven mask audit
+
+The audit tool selects 100 images: 60 MST-E and 40 FairFace, split between
+high-risk failures and stratified representative cases. A human reviewer marks
+forehead, left cheek, right cheek, and jawline as clean, minor contamination,
+major contamination, or insufficient visible skin.
+
+```powershell
+python scripts/prepare_mask_audit.py `
+  --results outputs/evaluation/baseline-v1/per_image_results.csv `
+  --output outputs/evaluation/baseline-v1/mask_audit.csv
+
+streamlit run scripts/mask_audit_app.py -- `
+  --dataset-root "C:\Users\abdul\Desktop\shadesense-datasets" `
+  --audit outputs/evaluation/baseline-v1/mask_audit.csv
+```
+
+Semantic face parsing should be added only if this review finds repeated,
+material contamination that the current MediaPipe masks cannot address.
+
+## Multi-photo evaluation
+
+For each MST-E identity with enough captures, the designated usable reference
+is held out. Two or three non-reference captures form the consensus and the
+reference is used only for CIEDE2000 repeatability scoring.
+
+```powershell
+python scripts/evaluate_multi_photo.py `
+  --results outputs/evaluation/v2-color-catalog/per_image_results.csv `
+  --output outputs/evaluation/v2-color-catalog/multi_photo
+```
+
+This produces CSV, JSON, and Markdown artifacts showing consensus-to-reference
+Delta E, individual-photo median Delta E, improvement rate, and outlier
+rejection rate.
+
+## Neutral-card mode
+
+The optional app mode estimates bounded RGB channel gains from the evenly lit
+centre of a neutral gray-card reference taken with the same camera and light.
+The mode rejects dark, clipped, or highly nonuniform references. Public
+benchmarks do not include calibration cards, so this feature is verified with
+synthetic regression tests and must not be presented as dataset-measured gain.
