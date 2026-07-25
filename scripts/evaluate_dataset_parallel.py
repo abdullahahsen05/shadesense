@@ -87,6 +87,29 @@ def main() -> int:
     if args.max_images is not None:
         manifest = manifest.head(args.max_images).copy()
     args.output.mkdir(parents=True, exist_ok=True)
+    campaign_state_path = args.output / "campaign_state.json"
+    if campaign_state_path.exists():
+        campaign_state = json.loads(
+            campaign_state_path.read_text(encoding="utf-8")
+        )
+        campaign_started_epoch = float(
+            campaign_state["campaign_started_epoch"]
+        )
+    else:
+        existing_manifests = list((args.output / "_shards").glob("manifest-*.csv"))
+        campaign_started_epoch = (
+            min(path.stat().st_ctime for path in existing_manifests)
+            if args.resume and existing_manifests
+            else time.time()
+        )
+        campaign_state_path.write_text(
+            json.dumps(
+                {"campaign_started_epoch": campaign_started_epoch},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     root_results = args.output / "results.jsonl"
     if root_results.exists() and not args.resume:
         raise FileExistsError(
@@ -225,7 +248,8 @@ def main() -> int:
         "requested_rows": int(len(manifest)),
         "workers": worker_count,
         "raw_images_committed": False,
-        "elapsed_seconds": time.perf_counter() - started,
+        "elapsed_seconds": time.time() - campaign_started_epoch,
+        "finalization_seconds": time.perf_counter() - started,
     }
     (args.output / "run_config.json").write_text(
         json.dumps(run_metadata, indent=2) + "\n",
