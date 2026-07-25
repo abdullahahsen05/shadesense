@@ -98,11 +98,29 @@ def main() -> int:
     worker_count = min(args.workers, len(manifest))
     processes = []
     log_handles = []
+    preserved_analysis_commits: dict[int, str] = {}
+    current_commit = _git_commit()
     for shard_index in range(worker_count):
         shard_manifest = manifest.iloc[shard_index::worker_count].copy()
         manifest_path = shard_root / f"manifest-{shard_index + 1}.csv"
         output_path = shard_root / f"worker-{shard_index + 1}"
         shard_manifest.to_csv(manifest_path, index=False)
+        existing_results = _read_jsonl(output_path / "results.jsonl")
+        existing_config_path = output_path / "run_config.json"
+        if args.resume and existing_results and existing_config_path.exists():
+            existing_config = json.loads(
+                existing_config_path.read_text(encoding="utf-8")
+            )
+            existing_commit = existing_config.get("git_commit", "unknown")
+            if len(existing_results) == len(shard_manifest):
+                preserved_analysis_commits[shard_index] = existing_commit
+            elif existing_commit != current_commit:
+                raise RuntimeError(
+                    f"Worker {shard_index + 1} is partially complete at "
+                    f"commit {existing_commit}; current commit is "
+                    f"{current_commit}. Use the original commit to resume or "
+                    "start a new candidate output to avoid mixed-code rows."
+                )
         command = [
             sys.executable,
             str(PROJECT_ROOT / "scripts" / "evaluate_dataset.py"),
@@ -152,9 +170,19 @@ def main() -> int:
     }
     result_rows = []
     recommendation_rows = []
+    analysis_commits = set()
     overlay_target = args.output / "debug_overlays"
     for shard_index in range(worker_count):
         output_path = shard_root / f"worker-{shard_index + 1}"
+        worker_config = json.loads(
+            (output_path / "run_config.json").read_text(encoding="utf-8")
+        )
+        analysis_commits.add(
+            preserved_analysis_commits.get(
+                shard_index,
+                worker_config.get("git_commit", "unknown"),
+            )
+        )
         result_rows.extend(_read_jsonl(output_path / "results.jsonl"))
         recommendation_rows.extend(
             _read_jsonl(output_path / "recommendations.jsonl")
@@ -164,6 +192,12 @@ def main() -> int:
             overlay_target.mkdir(parents=True, exist_ok=True)
             for source in source_overlays.glob("*.jpg"):
                 shutil.copy2(source, overlay_target / source.name)
+    if len(analysis_commits) != 1:
+        raise RuntimeError(
+            "Worker Git commits differ; refusing to merge a mixed-code run: "
+            + ", ".join(sorted(analysis_commits))
+        )
+    analysis_git_commit = next(iter(analysis_commits))
     result_rows.sort(key=lambda row: order[str(row["benchmark_id"])])
     recommendation_rows.sort(
         key=lambda row: (
@@ -178,7 +212,8 @@ def main() -> int:
     )
     run_metadata = {
         "run_label": args.run_label,
-        "git_commit": _git_commit(),
+        "git_commit": analysis_git_commit,
+        "finalization_git_commit": _git_commit(),
         "manifest_path": str(args.manifest.resolve()),
         "manifest_sha256": _sha256(args.manifest),
         "catalog_path": str(args.catalog.resolve()),
