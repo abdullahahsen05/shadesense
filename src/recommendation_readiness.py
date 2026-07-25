@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from src.readiness_calibration import load_readiness_thresholds
+
 
 @dataclass(frozen=True)
 class RecommendationReadiness:
@@ -23,7 +25,9 @@ def build_recommendation_readiness(
     extraction_quality_report: dict,
     lighting_quality=None,
     matches: list | None = None,
+    thresholds=None,
 ) -> RecommendationReadiness:
+    thresholds = thresholds or load_readiness_thresholds()
     extraction_score = float(extraction_quality_report.get("overall_score", 0.0))
     lighting_score = float(getattr(lighting_quality, "score", 1.0))
     uncertainty = getattr(skin_result, "uncertainty_diagnostics", {}) or {}
@@ -113,6 +117,7 @@ def build_recommendation_readiness(
     if eyewear_detected:
         combined = max(combined - 4.0, 0.0)
     reasons = [
+        f"Readiness gates: {thresholds.source}.",
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
         f"Bootstrap uncertainty radius {local_radius:.1f} Delta E (local patches).",
@@ -148,16 +153,27 @@ def build_recommendation_readiness(
 
     if (
         success
-        and combined >= 74.0
-        and extraction_score >= 68.0
-        and lighting_score >= 0.60
-        and radius <= 7.5
-        and sensitivity_radius <= 4.5
-        and bootstrap_family_top3 >= 0.55
-        and lighting_family_top3 >= 0.45
+        and combined >= thresholds.ready_score
+        and extraction_score >= thresholds.ready_extraction_score
+        and lighting_score >= thresholds.ready_lighting_score
+        and radius <= thresholds.ready_max_uncertainty
+        and sensitivity_radius <= thresholds.ready_max_sensitivity
+        and bootstrap_family_top3
+        >= thresholds.ready_min_bootstrap_family_top3
+        and lighting_family_top3
+        >= thresholds.ready_min_lighting_family_top3
     ):
         confidence_cap = float(
-            np.clip(0.78 + 0.15 * ((combined - 74.0) / 16.0), 0.78, 0.93)
+            np.clip(
+                0.78
+                + 0.15
+                * (
+                    (combined - thresholds.ready_score)
+                    / max(90.0 - thresholds.ready_score, 1.0)
+                ),
+                0.78,
+                0.93,
+            )
         )
         return RecommendationReadiness(
             state="ready",
@@ -171,15 +187,29 @@ def build_recommendation_readiness(
         )
     if (
         success
-        and combined >= 52.0
-        and extraction_score >= 50.0
-        and radius <= 10.0
-        and sensitivity_radius <= 6.5
-        and bootstrap_family_top3 >= 0.35
-        and lighting_family_top3 >= 0.30
+        and combined >= thresholds.caution_score
+        and extraction_score >= thresholds.caution_extraction_score
+        and radius <= thresholds.caution_max_uncertainty
+        and sensitivity_radius <= thresholds.caution_max_sensitivity
+        and bootstrap_family_top3
+        >= thresholds.caution_min_bootstrap_family_top3
+        and lighting_family_top3
+        >= thresholds.caution_min_lighting_family_top3
     ):
         confidence_cap = float(
-            np.clip(0.55 + 0.20 * ((combined - 52.0) / 22.0), 0.55, 0.75)
+            np.clip(
+                0.55
+                + 0.20
+                * (
+                    (combined - thresholds.caution_score)
+                    / max(
+                        thresholds.ready_score - thresholds.caution_score,
+                        1.0,
+                    )
+                ),
+                0.55,
+                0.75,
+            )
         )
         return RecommendationReadiness(
             state="caution",
