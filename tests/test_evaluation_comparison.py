@@ -52,3 +52,15 @@ def test_paired_comparison_reports_changes_without_accuracy_claim():
     assert bool(paired.iloc[0]["top1_changed"])
     assert summary["readiness_upgrade_rate"] == 1.0
     assert "not automatically an accuracy gain" in summary["interpretation_note"]
+
+
+def test_paired_comparison_keeps_failed_rows_with_blank_lab():
+    baseline = _run(60, "provisional", (50, 10, 15))
+    candidate = _run(0, "provisional", ("", "", ""))
+    candidate.loc[0, "pipeline_success"] = False
+
+    paired = build_paired_comparison(baseline, candidate)
+
+    assert len(paired) == 1
+    assert bool(paired.iloc[0]["success_changed"])
+    assert pd.isna(paired.iloc[0]["matching_lab_change_delta_e"])

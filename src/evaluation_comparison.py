@@ -61,14 +61,19 @@ def build_paired_comparison(
     ):
         left_labs = paired[
             [f"{column}_baseline" for column in lab_columns]
-        ].to_numpy(dtype=np.float64)
+        ].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
         right_labs = paired[
             [f"{column}_candidate" for column in lab_columns]
-        ].to_numpy(dtype=np.float64)
-        paired["matching_lab_change_delta_e"] = deltaE_ciede2000(
-            left_labs,
-            right_labs,
+        ].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=np.float64)
+        valid_labs = np.isfinite(left_labs).all(axis=1) & np.isfinite(
+            right_labs
+        ).all(axis=1)
+        lab_changes = np.full(len(paired), np.nan, dtype=np.float64)
+        lab_changes[valid_labs] = deltaE_ciede2000(
+            left_labs[valid_labs],
+            right_labs[valid_labs],
         )
+        paired["matching_lab_change_delta_e"] = lab_changes
     if "readiness_state_baseline" in paired and "readiness_state_candidate" in paired:
         baseline_level = (
             paired["readiness_state_baseline"].map(READINESS_ORDER).fillna(-1)
