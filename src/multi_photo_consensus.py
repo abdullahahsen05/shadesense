@@ -182,6 +182,51 @@ def build_multi_photo_consensus(
             success=False,
             warnings=["No uploaded photo produced a usable skin extraction."],
         )
+    if len(valid_pairs) == 1:
+        original_index, analysis = valid_pairs[0]
+        lab = _target_lab(analysis)
+        rgb = lab2rgb(lab.reshape(1, 1, 3)).reshape(3)
+        readiness = analysis.recommendation_readiness
+        return MultiPhotoConsensusResult(
+            success=True,
+            consensus_lab=tuple(float(value) for value in lab),
+            consensus_rgb=tuple(
+                int(round(value)) for value in np.clip(rgb * 255, 0, 255)
+            ),
+            retained_indices=[original_index],
+            evidence=[
+                CaptureConsensusEvidence(
+                    capture_index=original_index,
+                    lab=tuple(float(value) for value in lab),
+                    weight=_capture_weight(analysis),
+                    distance_from_medoid=0.0,
+                    included=True,
+                    readiness_state=getattr(
+                        readiness,
+                        "state",
+                        "provisional",
+                    ),
+                )
+            ],
+            agreement_delta_e_p90=0.0,
+            uncertainty_labs=[
+                tuple(float(value) for value in sample)
+                for sample in (
+                    analysis.skin_result.bootstrap_labs or [lab]
+                )
+            ],
+            matches=list(getattr(analysis, "matches", [])),
+            readiness=readiness,
+            reference_index=original_index,
+            warnings=[
+                "Only one photo produced usable evidence, so no cross-photo "
+                "consensus benefit was applied."
+            ],
+            explanation=(
+                "The usable photo is shown as a single-capture fallback; "
+                "retake the failed capture for consensus."
+            ),
+        )
 
     original_indices = [index for index, _ in valid_pairs]
     valid_analyses = [analysis for _, analysis in valid_pairs]

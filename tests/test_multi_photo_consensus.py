@@ -127,3 +127,16 @@ def test_two_disagreeing_photos_are_not_silently_dropped():
     assert result.rejected_indices == []
     assert result.readiness.state == "provisional"
     assert result.readiness.confidence_cap == 0.55
+
+
+def test_one_valid_photo_falls_back_without_claiming_consensus():
+    invalid = SimpleNamespace(success=False, skin_result=None)
+    result = build_multi_photo_consensus(
+        [invalid, _analysis((50.0, 10.0, 16.0))],
+        _catalog(),
+    )
+
+    assert result.success
+    assert result.retained_indices == [1]
+    assert result.reference_index == 1
+    assert "Only one photo" in result.warnings[0]
