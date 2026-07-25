@@ -5,21 +5,11 @@ This module contains presentation logic only. CV/matching logic lives in `src/`.
 
 import numpy as np
 import streamlit as st
-from src.color_correction import apply_mild_color_correction, correction_settings_for_lighting
-from src.confidence import build_quality_report, compute_confidence
-from src.capture_uncertainty import analyze_capture_uncertainty
+from src.analysis_pipeline import analyze_rgb_image
 from src.config import APP_NAME, TOP_K_SHADES
 from src.explanation import build_explanation
-from src.extraction_quality import build_extraction_quality_report
 from src.extraction_summary import build_skin_extraction_summary
-from src.extraction_selection import run_dual_extraction
-from src.face_detection import detect_face_landmarks
-from src.image_quality import analyze_image_quality
 from src.image_io import open_rgb_image
-from src.lighting_quality import analyze_lighting_quality
-from src.lighting_sensitivity import analyze_lighting_sensitivity
-from src.region_masks import build_region_masks, refine_masks_for_capture
-from src.recommendation_readiness import build_recommendation_readiness
 from src.shade_catalog import (
     MOCK_CATALOG_KEY,
     PUBLIC_CATALOG_KEY,
@@ -29,7 +19,6 @@ from src.shade_catalog import (
     load_default_catalog,
     load_named_catalog,
 )
-from src.shade_matcher import match_shades
 from src.visualization import (
     draw_all_region_masks,
     draw_face_landmarks,
@@ -109,22 +98,25 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     image = open_rgb_image(uploaded_file)
     image_rgb = np.array(image)
-    global_lighting_quality = analyze_lighting_quality(image_rgb)
-    provisional_settings = correction_settings_for_lighting(global_lighting_quality)
-    provisional_corrected_rgb, _ = apply_mild_color_correction(
-        image_rgb, **provisional_settings
+    analysis = analyze_rgb_image(
+        image_rgb,
+        catalog_df,
+        extraction_mode=extraction_mode,
+        top_k=TOP_K_SHADES,
     )
 
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Uploaded Image")
         st.image(image_rgb, caption=f"{image.width}x{image.height}px", width=400)
+        if analysis.analysis_scale < 1.0:
+            st.caption(
+                "CV analysis used a proportional "
+                f"{analysis.image_rgb.shape[1]}x{analysis.image_rgb.shape[0]}px "
+                "copy for stable runtime and resolution-independent sampling."
+            )
 
-    face_result = detect_face_landmarks(provisional_corrected_rgb)
-    provisional_image_quality = analyze_image_quality(
-        image_rgb, face_result.landmarks if face_result.success else None
-    )
-    image_quality = provisional_image_quality
+    face_result = analysis.face_result
 
     for warning in face_result.warnings:
         st.warning(warning)
@@ -132,21 +124,20 @@ if uploaded_file is not None:
     if not face_result.success:
         st.error(face_result.error)
     else:
-        masks = build_region_masks(image_rgb.shape, face_result.landmarks)
-        masks, mask_capture_diagnostics = refine_masks_for_capture(
-            image_rgb,
-            masks,
-            face_result.landmarks,
-            pose_asymmetry=provisional_image_quality.pose_asymmetry,
-        )
-        image_quality = analyze_image_quality(
-            image_rgb, face_result.landmarks, masks=masks
-        )
-        lighting_quality = analyze_lighting_quality(image_rgb, masks=masks)
-        correction_settings = correction_settings_for_lighting(lighting_quality)
-        corrected_rgb, correction_notes = apply_mild_color_correction(
-            image_rgb, **correction_settings
-        )
+        masks = analysis.masks
+        mask_capture_diagnostics = analysis.mask_capture_diagnostics
+        image_quality = analysis.image_quality
+        lighting_quality = analysis.lighting_quality
+        corrected_rgb = analysis.corrected_rgb
+        correction_notes = analysis.correction_notes
+        extraction_selection = analysis.extraction_selection
+        skin_result = analysis.skin_result
+        lighting_sensitivity = analysis.lighting_sensitivity
+        capture_uncertainty = analysis.capture_uncertainty
+        extraction_quality_report = analysis.extraction_quality_report
+        recommendation_readiness = analysis.recommendation_readiness
+        visualization_rgb = analysis.visualization_rgb
+        visual_source_label = analysis.visual_source_label
 
         with st.expander("Lighting correction notes"):
             for note in correction_notes:
@@ -186,64 +177,6 @@ if uploaded_file is not None:
             st.warning(warning)
         for warning in mask_capture_diagnostics["warnings"]:
             st.warning(warning)
-
-        extraction_selection = run_dual_extraction(
-            image_rgb, corrected_rgb, masks, lighting_quality, extraction_mode
-        )
-        skin_result = extraction_selection.selected
-        skin_result.capture_region_diagnostics = mask_capture_diagnostics
-        skin_result.extraction_quality_reasons.append(extraction_selection.reason)
-        sensitivity_source_rgb = (
-            image_rgb
-            if extraction_selection.selected_source == "original"
-            else corrected_rgb
-        )
-        lighting_sensitivity = analyze_lighting_sensitivity(
-            sensitivity_source_rgb,
-            masks,
-            skin_result,
-        )
-        skin_result.lighting_sensitivity_labs = lighting_sensitivity.variant_labs
-        skin_result.lighting_sensitivity_diagnostics = (
-            lighting_sensitivity.as_diagnostics()
-        )
-        skin_result.warnings.extend(lighting_sensitivity.warnings)
-        capture_uncertainty = analyze_capture_uncertainty(
-            skin_result,
-            lighting_quality=lighting_quality,
-            image_quality=image_quality,
-        )
-        skin_result.systematic_uncertainty_diagnostics = (
-            capture_uncertainty.as_diagnostics()
-        )
-        skin_result.warnings.extend(capture_uncertainty.warnings)
-        extraction_quality_report = build_extraction_quality_report(
-            skin_result,
-            image_quality=image_quality,
-            lighting_quality=lighting_quality,
-            extraction_selection=extraction_selection,
-            face_result=face_result,
-        )
-        readiness_matching_lab = (
-            skin_result.foundation_target_lab
-            if skin_result.foundation_target_active
-            else skin_result.lab
-        )
-        readiness_matches = match_shades(
-            np.array(readiness_matching_lab),
-            catalog_df,
-            top_k=TOP_K_SHADES,
-            uncertainty_labs=skin_result.bootstrap_labs,
-            lighting_sensitivity_labs=skin_result.lighting_sensitivity_labs,
-        )
-        recommendation_readiness = build_recommendation_readiness(
-            skin_result,
-            extraction_quality_report,
-            lighting_quality,
-            matches=readiness_matches,
-        )
-        visualization_rgb = image_rgb if extraction_selection.selected_source == "original" else corrected_rgb
-        visual_source_label = "Original image" if extraction_selection.selected_source == "original" else "Corrected image"
 
         with col2:
             st.subheader("Detected Face Landmarks")
@@ -616,14 +549,7 @@ if uploaded_file is not None:
                 for w in catalog_df.attrs.get("warnings", []):
                     st.warning(w)
 
-                matching_lab = skin_result.foundation_target_lab if skin_result.foundation_target_active else skin_result.lab
-                matches = match_shades(
-                    np.array(matching_lab),
-                    catalog_df,
-                    top_k=TOP_K_SHADES,
-                    uncertainty_labs=skin_result.bootstrap_labs,
-                    lighting_sensitivity_labs=skin_result.lighting_sensitivity_labs,
-                )
+                matches = analysis.matches
 
                 if not matches:
                     st.error("No shades available to recommend.")
@@ -634,14 +560,7 @@ if uploaded_file is not None:
                             f"showing all available instead of {TOP_K_SHADES}."
                         )
 
-                    quality_report = build_quality_report(
-                        skin_result, face_result, matches, lighting_quality
-                    )
-                    matches = compute_confidence(
-                        matches,
-                        quality_report,
-                        readiness=recommendation_readiness,
-                    )
+                    quality_report = analysis.quality_report
 
                     for w in quality_report.warnings:
                         st.warning(w)
