@@ -10,6 +10,12 @@ from skimage.color import deltaE_ciede2000
 READINESS_ORDER = {"provisional": 0, "caution": 1, "ready": 2}
 
 
+def _as_bool(values: pd.Series) -> pd.Series:
+    if values.dtype == bool:
+        return values.fillna(False)
+    return values.astype(str).str.lower().isin(("true", "1", "yes"))
+
+
 def build_paired_comparison(
     baseline: pd.DataFrame,
     candidate: pd.DataFrame,
@@ -27,8 +33,8 @@ def build_paired_comparison(
     )
     paired = left.merge(right, on="benchmark_id", how="inner", validate="1:1")
     paired["success_changed"] = (
-        paired["pipeline_success_baseline"].astype(bool)
-        != paired["pipeline_success_candidate"].astype(bool)
+        _as_bool(paired["pipeline_success_baseline"])
+        != _as_bool(paired["pipeline_success_candidate"])
     )
     for column in (
         "extraction_quality_score",
