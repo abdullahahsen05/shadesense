@@ -22,6 +22,7 @@ def _records():
                     ),
                     "pipeline_success": True,
                     "lighting_low_signal": False,
+                    "lighting_score": 0.8,
                     "readiness_score": 72 if usable else 56,
                     "extraction_quality_score": 75 if usable else 58,
                     "capture_uncertainty_delta_e_p90": 5 if usable else 11,
@@ -36,6 +37,8 @@ def test_readiness_calibration_uses_development_and_reports_locked_test():
 
     assert thresholds.source == "MST-E development metadata calibration"
     assert evidence["development"]["usable_accept_rate"] == 1.0
+    assert evidence["development"]["usable_ready_rate"] == 1.0
+    assert evidence["development"]["false_usable_rate"] == 0.0
     assert evidence["development"]["false_ready_rate"] == 0.0
     assert evidence["locked_test"]["usable_accept_rate"] == 1.0
     assert evidence["locked_test"]["false_ready_rate"] == 0.0

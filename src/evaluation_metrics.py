@@ -206,6 +206,7 @@ def analysis_record(
         )
 
     if readiness is not None:
+        best_match = analysis.readiness_matches[0] if analysis.readiness_matches else None
         record.update(
             {
                 "readiness_state": readiness.state,
@@ -220,6 +221,16 @@ def analysis_record(
                     readiness.exact_product_stability_score
                 ),
                 "confidence_cap": _finite(readiness.confidence_cap),
+                "bootstrap_top3_family_stability": _finite(
+                    getattr(best_match, "top3_family_stability", np.nan)
+                ),
+                "lighting_top3_family_stability": _finite(
+                    getattr(
+                        best_match,
+                        "lighting_top3_family_stability",
+                        np.nan,
+                    )
+                ),
             }
         )
     return record

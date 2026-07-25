@@ -114,14 +114,16 @@ selected.
 
 ```powershell
 python scripts/calibrate_readiness.py `
-  --results outputs/evaluation/baseline-v1/per_image_results.csv `
-  --run-config outputs/evaluation/baseline-v1/run_config.json `
+  --results outputs/evaluation/v2-color-catalog/per_image_results.csv `
+  --run-config outputs/evaluation/v2-color-catalog/run_config.json `
   --output data/evaluation/readiness_calibration.json
 ```
 
 MST-E metadata provides capture-quality proxy labels, not foundation shade
 ground truth. Calibration therefore improves recapture safety, not proof of
-physical product accuracy.
+physical product accuracy. Calibration must use the improved candidate run
+because transplanting thresholds from a pipeline with different low-signal
+behavior would introduce distribution shift.
 
 ## Failure-driven mask audit
 
