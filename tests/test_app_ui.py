@@ -128,3 +128,20 @@ def test_extraction_mode_controls_are_not_exposed_in_ui():
     assert "Extraction debug mode" not in page_text
     assert "Force original extraction" not in page_text
     assert "Force corrected extraction" not in page_text
+
+
+def test_two_uploaded_photos_render_consensus_diagnostics():
+    at = AppTest.from_file("app.py")
+    at.run(timeout=30)
+    image_path = Path("data/sample_images/face_astronaut.png")
+    content = image_path.read_bytes()
+    at.file_uploader[0].upload("capture-one.png", content)
+    at.file_uploader[0].upload("capture-two.png", content)
+    at.run(timeout=180)
+    page_text = _page_text(at)
+
+    assert not at.error
+    assert "Multi-photo consensus" in page_text
+    assert "2 of 2 captures retained" in page_text
+    assert "Cross-photo agreement:" in page_text
+    assert len(at.table) >= 1

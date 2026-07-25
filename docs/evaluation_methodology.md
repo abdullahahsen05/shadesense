@@ -159,6 +159,22 @@ This produces CSV, JSON, and Markdown artifacts showing consensus-to-reference
 Delta E, individual-photo median Delta E, improvement rate, and outlier
 rejection rate.
 
+## Paired baseline comparison
+
+After both complete runs use the same frozen manifest, write a paired artifact
+bundle rather than comparing rounded headline numbers by eye:
+
+```powershell
+python scripts/compare_evaluation_runs.py `
+  --baseline outputs/evaluation/baseline-v1 `
+  --candidate outputs/evaluation/v2-color-catalog `
+  --output outputs/evaluation/baseline-v1-vs-v2
+```
+
+The comparison reports pipeline changes, readiness transitions, extracted Lab
+movement, and catalog Top-1 changes for the same image IDs. A product change is
+not labeled an accuracy improvement without physical product ground truth.
+
 ## Neutral-card mode
 
 The optional app mode estimates bounded RGB channel gains from the evenly lit
