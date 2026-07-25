@@ -23,6 +23,16 @@ class CaptureConsensusEvidence:
     readiness_state: str
 
 
+@dataclass(frozen=True)
+class LabConsensus:
+    lab: tuple[float, float, float]
+    medoid_index: int
+    distances_from_medoid: tuple[float, ...]
+    retained_indices: tuple[int, ...]
+    rejected_indices: tuple[int, ...]
+    agreement_delta_e_p90: float
+
+
 @dataclass
 class MultiPhotoConsensusResult:
     success: bool
@@ -85,6 +95,53 @@ def _retained_mask(distances: np.ndarray) -> np.ndarray:
     if retained.sum() < 2:
         retained[np.argsort(distances)[:2]] = True
     return retained
+
+
+def consensus_from_labs(
+    labs,
+    weights=None,
+) -> LabConsensus:
+    """Return deterministic perceptual consensus for two or more Lab values."""
+    labs = np.asarray(labs, dtype=np.float64)
+    if labs.ndim != 2 or labs.shape[1] != 3 or len(labs) == 0:
+        raise ValueError("labs must contain at least one CIE Lab triplet.")
+    if weights is None:
+        weights = np.ones(len(labs), dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.shape != (len(labs),) or np.any(weights < 0):
+        raise ValueError("weights must be non-negative and match labs.")
+    if float(weights.sum()) <= 0:
+        raise ValueError("At least one consensus weight must be positive.")
+    medoid_index = _weighted_medoid(labs, weights)
+    distances = deltaE_ciede2000(
+        np.repeat(labs[medoid_index][None, :], len(labs), axis=0),
+        labs,
+    )
+    retained = _retained_mask(distances)
+    retained_indices = np.flatnonzero(retained)
+    retained_weights = weights[retained]
+    retained_weights /= retained_weights.sum()
+    lab = np.average(
+        labs[retained],
+        axis=0,
+        weights=retained_weights,
+    )
+    retained_distances = deltaE_ciede2000(
+        np.repeat(lab[None, :], len(retained_indices), axis=0),
+        labs[retained],
+    )
+    return LabConsensus(
+        lab=tuple(float(value) for value in lab),
+        medoid_index=medoid_index,
+        distances_from_medoid=tuple(float(value) for value in distances),
+        retained_indices=tuple(int(value) for value in retained_indices),
+        rejected_indices=tuple(
+            int(value) for value in np.flatnonzero(~retained)
+        ),
+        agreement_delta_e_p90=float(
+            np.percentile(retained_distances, 90)
+        ),
+    )
 
 
 def _balanced_uncertainty_samples(
@@ -204,33 +261,19 @@ def build_multi_photo_consensus(
     valid_analyses = [analysis for _, analysis in valid_pairs]
     labs = np.asarray([_target_lab(item) for item in valid_analyses])
     weights = np.asarray([_capture_weight(item) for item in valid_analyses])
-    medoid_index = _weighted_medoid(labs, weights)
-    repeated_medoid = np.repeat(
-        labs[medoid_index][None, :],
-        len(labs),
-        axis=0,
-    )
-    distances = deltaE_ciede2000(repeated_medoid, labs)
-    retained_local = _retained_mask(distances)
-    retained_local_indices = np.flatnonzero(retained_local).tolist()
-    retained_weights = weights[retained_local]
-    retained_weights /= retained_weights.sum()
-    consensus_lab = np.average(
-        labs[retained_local],
-        axis=0,
-        weights=retained_weights,
-    )
-    retained_distances = deltaE_ciede2000(
-        np.repeat(consensus_lab[None, :], retained_local.sum(), axis=0),
-        labs[retained_local],
-    )
-    agreement = float(np.percentile(retained_distances, 90))
+    lab_consensus = consensus_from_labs(labs, weights)
+    medoid_index = lab_consensus.medoid_index
+    distances = np.asarray(lab_consensus.distances_from_medoid)
+    retained_local_indices = list(lab_consensus.retained_indices)
+    retained_local = np.zeros(len(labs), dtype=bool)
+    retained_local[retained_local_indices] = True
+    consensus_lab = np.asarray(lab_consensus.lab)
+    agreement = lab_consensus.agreement_delta_e_p90
     retained_indices = [
         original_indices[index] for index in retained_local_indices
     ]
     rejected_indices = [
-        original_indices[index]
-        for index in np.flatnonzero(~retained_local).tolist()
+        original_indices[index] for index in lab_consensus.rejected_indices
     ]
     uncertainty_labs = _balanced_uncertainty_samples(
         analyses,
