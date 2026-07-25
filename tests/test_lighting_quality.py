@@ -107,6 +107,46 @@ def test_shadowed_cheek_is_low_signal_without_treating_even_deep_skin_as_bad():
     assert uneven.score < even.score
 
 
+def test_dark_optional_region_does_not_force_low_signal_for_clean_cheeks():
+    image = np.full((100, 140, 3), 70, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    jawline = np.zeros_like(left)
+    left[25:70, 15:60] = 255
+    right[25:70, 80:125] = 255
+    jawline[75:95, 40:100] = 255
+    image[jawline > 0] = 8
+
+    result = analyze_lighting_quality(
+        image,
+        masks={
+            "left_cheek": left,
+            "right_cheek": right,
+            "jawline": jawline,
+        },
+    )
+
+    assert result.worst_region_shadow_ratio > 0.12
+    assert not result.low_signal
+
+
+def test_near_black_clipping_in_a_cheek_is_low_signal():
+    image = np.full((100, 140, 3), 90, dtype=np.uint8)
+    left = np.zeros((100, 140), dtype=np.uint8)
+    right = np.zeros_like(left)
+    left[25:80, 15:60] = 255
+    right[25:80, 80:125] = 255
+    image[25:50, 15:60] = 5
+
+    result = analyze_lighting_quality(
+        image,
+        masks={"left_cheek": left, "right_cheek": right},
+    )
+
+    assert result.face_black_clip_ratio > 0.08
+    assert result.low_signal
+
+
 def test_continuous_lighting_subscores_distinguish_severity():
     left = np.zeros((100, 140), dtype=np.uint8)
     right = np.zeros_like(left)

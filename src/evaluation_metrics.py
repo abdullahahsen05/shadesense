@@ -118,6 +118,9 @@ def analysis_record(
             "lighting_uneven": bool(lighting.uneven_lighting),
             "lighting_color_cast": bool(lighting.color_cast),
             "face_median_luma": _finite(lighting.face_median_luma),
+            "face_black_clip_ratio": _finite(
+                getattr(lighting, "face_black_clip_ratio", 0.0)
+            ),
             "left_right_gap": _finite(lighting.left_right_gap),
             "central_lower_gap": _finite(lighting.central_lower_gap),
             "eyewear_detected": bool(

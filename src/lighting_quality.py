@@ -20,6 +20,7 @@ class LightingQuality:
     using_face_regions: bool = False
     face_highlight_ratio: float = 0.0
     face_shadow_ratio: float = 0.0
+    face_black_clip_ratio: float = 0.0
     face_luminance_spread: float = 0.0
     left_right_gap: float = 0.0
     central_lower_gap: float = 0.0
@@ -48,6 +49,7 @@ def _region_metric(image_rgb: np.ndarray, gray: np.ndarray, mask: np.ndarray) ->
         "mean_luma": float(np.mean(luma)),
         "median_luma": float(p50),
         "shadow_ratio": float(np.mean(luma < 45)),
+        "black_clip_ratio": float(np.mean(luma < 18)),
         "highlight_ratio": float(np.mean(luma > 225)),
         "broad_highlight_ratio": float(np.mean(luma > 205)),
         "luminance_spread": float(p95 - p05),
@@ -112,6 +114,7 @@ def analyze_lighting_quality(
     highlight_ratio = float(np.mean(sample_gray > 225))
     broad_highlight_ratio = float(np.mean(sample_gray > 205))
     shadow_ratio = float(np.mean(sample_gray < 45))
+    black_clip_ratio = float(np.mean(sample_gray < 18))
     highlight_gap = p99 - p75
 
     if using_face_regions:
@@ -145,7 +148,17 @@ def analyze_lighting_quality(
     if using_face_regions:
         # Absolute face luminance is not a safe proxy for exposure across skin
         # tones. Require substantial near-black clipping when face masks exist.
-        underexposed = shadow_ratio > 0.18 and p95 < 120
+        cheek_black_clip_evidence = max(
+            (
+                float(
+                    region_metrics[name].get("black_clip_ratio", 0.0)
+                )
+                for name in ("left_cheek", "right_cheek")
+                if name in region_metrics
+            ),
+            default=black_clip_ratio,
+        )
+        underexposed = cheek_black_clip_evidence > 0.10 and p95 < 100
     else:
         underexposed = mean_luma < 70 or p75 < 85
     overexposed = mean_luma > 205 or p25 > 185
@@ -161,6 +174,15 @@ def analyze_lighting_quality(
         for metric in region_metrics.values()
     ]
     worst_region_shadow_ratio = max(region_shadow_ratios, default=shadow_ratio)
+    cheek_black_clip_ratios = [
+        float(region_metrics[name].get("black_clip_ratio", 0.0))
+        for name in ("left_cheek", "right_cheek")
+        if name in region_metrics
+    ]
+    worst_cheek_black_clip_ratio = max(
+        cheek_black_clip_ratios,
+        default=black_clip_ratio,
+    )
     cheek_medians = [
         float(region_metrics[name]["median_luma"])
         for name in ("left_cheek", "right_cheek")
@@ -176,7 +198,7 @@ def analyze_lighting_quality(
     # shadowed region relative to the other side of the same face.
     low_signal = bool(
         underexposed
-        or worst_region_shadow_ratio > 0.12
+        or worst_cheek_black_clip_ratio > 0.08
         or shadowed_cheek
     )
 
@@ -245,7 +267,8 @@ def analyze_lighting_quality(
     scope = "facial skin regions" if using_face_regions else "full image"
     explanation = (
         f"Measured on {scope}: median luminance {p50:.0f}/255, shadow range {shadow_contrast:.0f}, "
-        f"uneven-lighting gap {uneven_gap:.0f}, highlight ratio {highlight_ratio:.1%}, "
+        f"black-clipped pixels {black_clip_ratio:.1%}, uneven-lighting gap {uneven_gap:.0f}, "
+        f"highlight ratio {highlight_ratio:.1%}, "
         f"color-cast strength {cast_strength:.0f}. "
         f"Subscores — exposure {exposure_score:.0%}, uniformity {uniformity_score:.0%}, "
         f"contrast {contrast_score:.0%}, highlights {highlight_score:.0%}, "
@@ -267,6 +290,7 @@ def analyze_lighting_quality(
         using_face_regions=using_face_regions,
         face_highlight_ratio=highlight_ratio,
         face_shadow_ratio=shadow_ratio,
+        face_black_clip_ratio=black_clip_ratio,
         face_luminance_spread=shadow_contrast,
         left_right_gap=float(left_right_gap),
         central_lower_gap=float(central_lower_gap),
