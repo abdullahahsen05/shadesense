@@ -69,7 +69,6 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "displayed on Original image" in page_text
     assert "Estimated ITA:" in page_text
     assert "Estimated skin-depth category:" in page_text
-    assert "Depth sanity:" in page_text
     assert "Skin Extraction Summary" in page_text
     assert "Skin Extraction Quality" in page_text
     assert "Skin Extraction Quality Details" in page_text
@@ -96,11 +95,17 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Sensitivity score:" in page_text
     assert "90th-percentile perturbation shift:" in page_text
     assert "Usable perturbations:" in page_text
-    assert "Product type:" in page_text
-    assert "catalog evidence" in page_text
-    assert "Distribution-aware ranking Delta E:" in page_text
-    assert "Exact-product bootstrap stability:" in page_text
-    assert "Exact-product lighting stability:" in page_text
+    assert "Your shade shortlist" in page_text
+    assert "What to know about this result" in page_text
+    assert "One facial region was excluded" in page_text
+    assert "One region had reduced influence" in page_text
+    assert "retained 12% influence" in page_text
+    assert "Visual evidence" in page_text
+    assert "Technical evidence for evaluators" in page_text
+    assert "Detailed recommendation evidence" in page_text
+    assert "CIEDE2000 remains the primary color distance" in page_text
+    assert "Full diagnostic messages" in page_text
+    assert len(at.warning) < 8
 
 
 def test_capture_guidance_text_exists():
@@ -114,12 +119,11 @@ def test_capture_guidance_text_exists():
             for item in group
         ]
     )
-    assert "For best results" in page_text
+    assert "Best capture" in page_text
     assert "soft daylight" in page_text
-    assert "face camera directly" in page_text
-    assert "cheeks and jawline visible" in page_text
-    assert "Color handling is automatic" in page_text
-    assert "preserves original image color" in page_text
+    assert "face the camera" in page_text
+    assert "side jaw visible" in page_text
+    assert "Choose a clear facial photo" in page_text
     assert len(at.file_uploader) == 1
     assert "neutral-card" not in page_text.lower()
 
@@ -133,6 +137,18 @@ def test_extraction_mode_controls_are_not_exposed_in_ui():
     assert "Extraction debug mode" not in page_text
     assert "Force original extraction" not in page_text
     assert "Force corrected extraction" not in page_text
+
+
+def test_per_region_quality_is_placed_beside_region_visuals():
+    source = Path("app.py").read_text(encoding="utf-8")
+
+    region_quality_position = source.index(
+        "        _render_region_quality(skin_result)"
+    )
+    extracted_tone_position = source.index(
+        '        st.subheader("Extracted Skin Tone")'
+    )
+    assert region_quality_position < extracted_tone_position
 
 
 def test_two_uploaded_photos_render_consensus_diagnostics():
