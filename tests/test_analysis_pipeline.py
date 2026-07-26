@@ -35,7 +35,14 @@ def test_shared_pipeline_returns_complete_face_analysis():
         "provisional",
     }
     assert len(result.matches) == 3
-    assert all(match.confidence is not None for match in result.matches)
+    assert all(match.candidate_confidence is not None for match in result.matches)
+    assert all(match.color_fit_score is not None for match in result.matches)
+    assert all(
+        match.candidate_confidence
+        <= result.recommendation_readiness.confidence_cap
+        for match in result.matches
+    )
+    assert len({round(match.candidate_confidence, 6) for match in result.matches}) > 1
 
 
 def test_shared_pipeline_returns_graceful_no_face_result():

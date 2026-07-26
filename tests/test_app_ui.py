@@ -72,7 +72,7 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Skin Extraction Summary" in page_text
     assert "Skin Extraction Quality" in page_text
     assert "Skin Extraction Quality Details" in page_text
-    assert "separate from shade Match confidence" in page_text
+    assert "separate from candidate confidence" in page_text
     assert "Region Reliability:" in page_text
     assert "Extraction reliability:" in page_text
     assert "Trusted regions used:" in page_text
@@ -96,6 +96,10 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "90th-percentile perturbation shift:" in page_text
     assert "Usable perturbations:" in page_text
     assert "Your shade shortlist" in page_text
+    assert "Candidate confidence" in page_text
+    assert "Color fit" in page_text
+    assert "Shade-family stability" in page_text
+    assert "Capture readiness is reported separately" in page_text
     assert "What to know about this result" in page_text
     assert "One facial region was excluded" in page_text
     assert "One region had reduced influence" in page_text

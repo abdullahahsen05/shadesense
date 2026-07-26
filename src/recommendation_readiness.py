@@ -111,19 +111,17 @@ def build_recommendation_readiness(
             100.0,
         )
     )
-    combined = float(
-        np.clip(0.95 * capture_readiness_score + 0.05 * rank_score, 0.0, 100.0)
-    )
     if eyewear_detected:
-        combined = max(combined - 4.0, 0.0)
+        capture_readiness_score = max(capture_readiness_score - 4.0, 0.0)
+    combined = capture_readiness_score
     reasons = [
         f"Readiness gates: {thresholds.source}.",
         f"Skin Extraction Quality {extraction_score:.0f}/100.",
         f"Face-aware lighting quality {lighting_score:.0%}.",
         f"Bootstrap uncertainty radius {local_radius:.1f} Delta E (local patches).",
         f"Total capture uncertainty radius {radius:.1f} Delta E.",
-        f"Shade-family ranking stability {rank_score:.0f}/100.",
-        f"Exact-product ranking stability {exact_rank_score:.0f}/100.",
+        f"Shade-family ranking stability {rank_score:.0f}/100 (reported separately from capture readiness).",
+        f"Exact-product ranking stability {exact_rank_score:.0f}/100 (diagnostic only).",
         f"Lighting sensitivity {sensitivity_score:.0f}/100 with {sensitivity_radius:.1f} Delta E variation.",
     ]
     if eyewear_detected:
@@ -158,10 +156,6 @@ def build_recommendation_readiness(
         and lighting_score >= thresholds.ready_lighting_score
         and radius <= thresholds.ready_max_uncertainty
         and sensitivity_radius <= thresholds.ready_max_sensitivity
-        and bootstrap_family_top3
-        >= thresholds.ready_min_bootstrap_family_top3
-        and lighting_family_top3
-        >= thresholds.ready_min_lighting_family_top3
     ):
         confidence_cap = float(
             np.clip(
@@ -179,7 +173,7 @@ def build_recommendation_readiness(
             state="ready",
             score=combined,
             confidence_cap=confidence_cap,
-            summary="Recommendation evidence is ready for comparison with the catalog.",
+            summary="Capture evidence is ready for comparison with the catalog.",
             reasons=reasons,
             capture_readiness_score=capture_readiness_score,
             shade_family_stability_score=rank_score,
@@ -191,10 +185,6 @@ def build_recommendation_readiness(
         and extraction_score >= thresholds.caution_extraction_score
         and radius <= thresholds.caution_max_uncertainty
         and sensitivity_radius <= thresholds.caution_max_sensitivity
-        and bootstrap_family_top3
-        >= thresholds.caution_min_bootstrap_family_top3
-        and lighting_family_top3
-        >= thresholds.caution_min_lighting_family_top3
     ):
         confidence_cap = float(
             np.clip(
@@ -215,7 +205,7 @@ def build_recommendation_readiness(
             state="caution",
             score=combined,
             confidence_cap=confidence_cap,
-            summary="Recommendations are usable with caution; image or extraction evidence is limited.",
+            summary="Capture evidence is usable with caution; image or extraction evidence is limited.",
             reasons=reasons,
             warnings=["Consider retaking the photo in soft, even daylight for a more stable ranking."],
             capture_readiness_score=capture_readiness_score,
@@ -226,7 +216,7 @@ def build_recommendation_readiness(
         state="provisional",
         score=combined,
         confidence_cap=0.55,
-        summary="Recommendations are provisional because the current image does not provide stable enough color evidence.",
+        summary="Recommendations are provisional because the current image does not provide stable enough capture evidence.",
         reasons=reasons,
         warnings=[
             "Retake the photo in soft daylight with both cheeks and the jawline visible. "

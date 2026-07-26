@@ -107,7 +107,11 @@ def _render_primary_result(
     st.subheader("Your shade shortlist")
     st.markdown(
         '<p class="ss-section-note">Closest catalog colors, ordered by perceptual '
-        "match. Confidence is a cautious reliability score, not a probability.</p>",
+        "match. Candidate confidence combines this shade’s color fit, shade-family "
+        "stability, and catalog evidence. Capture readiness is reported separately "
+        "and limits the maximum score. Ranking remains color-first, so a lower-ranked "
+        "shade can have stronger stability and a slightly higher confidence score. "
+        "Neither score is a probability.</p>",
         unsafe_allow_html=True,
     )
     st.markdown(shade_strip_html(strip_stops), unsafe_allow_html=True)
@@ -122,14 +126,52 @@ def _render_primary_result(
                 )
                 st.markdown(f"**#{match.rank} · {match.shade_name}**")
                 st.caption(f"{match.brand} · {match.product or 'Foundation'}")
+                candidate_value = getattr(match, "candidate_confidence", None)
+                candidate_confidence = (
+                    candidate_value
+                    if candidate_value is not None
+                    else match.confidence
+                    if match.confidence is not None
+                    else 0.0
+                )
                 confidence_label = (
                     "Strong shortlist"
-                    if match.confidence >= 0.76
+                    if candidate_confidence >= 0.76
                     else "Useful comparison"
-                    if match.confidence >= 0.60
+                    if candidate_confidence >= 0.60
                     else "Verify with another photo"
                 )
-                st.metric("Match confidence", f"{match.confidence:.0%}")
+                st.metric(
+                    "Candidate confidence",
+                    f"{candidate_confidence:.0%}",
+                )
+                color_fit_value = getattr(match, "color_fit_score", None)
+                color_fit = (
+                    color_fit_value
+                    if color_fit_value is not None
+                    else 0.0
+                )
+                family_stability = getattr(
+                    match, "shade_family_stability_score", None
+                )
+                stability_text = (
+                    f"{family_stability:.0%}"
+                    if family_stability is not None
+                    else "unavailable"
+                )
+                st.caption(
+                    f"Color fit {color_fit:.0%} · "
+                    f"Shade-family stability {stability_text} · "
+                    f"Catalog evidence {match.catalog_quality_score:.0%}"
+                )
+                if (
+                    getattr(match, "confidence_stability_source", "unavailable")
+                    == "exact_product_fallback"
+                ):
+                    st.caption(
+                        "Stability fallback: exact-product Top-3 stability was "
+                        "used because shade-family stability was unavailable."
+                    )
                 st.caption(
                     f"{confidence_label} · Delta E {match.delta_e:.1f} · "
                     f"{match.depth or 'unknown depth'} · "
@@ -601,7 +643,7 @@ if uploaded_files:
         with st.expander("Skin Extraction Quality Details"):
             st.caption("Skin Extraction Quality Details")
             st.caption(
-                "Skin Extraction Quality is separate from shade Match confidence. "
+                "Skin Extraction Quality is separate from candidate confidence. "
                 "It measures how reliable the extracted skin color is before catalog matching."
             )
             for name, score in extraction_quality_report["subscores"].items():
@@ -893,8 +935,22 @@ if uploaded_files:
                     "CIEDE2000 remains the primary color distance. Distribution, "
                     "uncertainty, product type, and stability only moderate close matches."
                 )
+                st.caption(
+                    "Candidate confidence = capture-readiness cap × normalized "
+                    "candidate evidence (65% color fit, 25% shade-family stability, "
+                    "10% catalog evidence). Missing factors are omitted and the "
+                    "remaining weights are normalized. Color fit = exp(-distribution-"
+                    "aware Delta E / 15). Ranking remains color-first."
+                )
                 detail_rows = []
                 for match in matches:
+                    candidate_value = getattr(
+                        match, "candidate_confidence", None
+                    )
+                    color_fit_value = getattr(match, "color_fit_score", None)
+                    family_stability = getattr(
+                        match, "shade_family_stability_score", None
+                    )
                     detail_rows.append(
                         {
                             "Rank": match.rank,
@@ -909,7 +965,22 @@ if uploaded_files:
                                 if match.distribution_delta_e is not None
                                 else "n/a"
                             ),
-                            "Confidence": f"{match.confidence:.0%}",
+                            "Candidate confidence": (
+                                f"{(candidate_value or 0.0):.0%}"
+                            ),
+                            "Color fit": f"{(color_fit_value or 0.0):.0%}",
+                            "Shade-family stability": (
+                                f"{family_stability:.0%}"
+                                if family_stability is not None
+                                else "unavailable"
+                            ),
+                            "Stability source": (
+                                getattr(
+                                    match,
+                                    "confidence_stability_source",
+                                    "unavailable",
+                                ).replace("_", " ")
+                            ),
                             "Catalog evidence": f"{match.catalog_quality_score:.0%}",
                             "Top-1 stability": (
                                 f"{match.recommendation_stability:.0%}"

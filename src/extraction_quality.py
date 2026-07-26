@@ -1,8 +1,7 @@
 """Formal skin extraction quality scoring.
 
 This score describes how reliable the extracted skin color is. It is separate
-from shade match confidence, which describes how clearly that extracted color
-matches the catalog.
+from capture readiness and candidate-specific confidence.
 """
 
 from __future__ import annotations
@@ -167,6 +166,8 @@ def build_extraction_quality_report(
     }
     report["reasons"] = [
         _quality_sentence(report),
-        "Skin Extraction Quality measures input/extraction reliability, while Match confidence measures catalog-match clarity.",
+        "Skin Extraction Quality measures input/extraction reliability. Capture "
+        "Readiness sets the safety ceiling, while Candidate Confidence describes "
+        "the evidence for each shade.",
     ]
     return report

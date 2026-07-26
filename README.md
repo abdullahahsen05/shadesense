@@ -3,7 +3,8 @@
 ShadeSense AI is a local-first computer-vision app for foundation shade
 recommendation. It analyzes a facial image, extracts a robust skin-tone estimate
 from cheek, forehead, and jawline regions, and recommends the Top 3 closest
-foundation shades from a local catalog with match confidence and explanations.
+foundation shades from a local catalog with capture readiness,
+candidate-specific confidence, and explanations.
 
 ## Status
 
@@ -52,14 +53,17 @@ Then open the local URL Streamlit prints, usually `http://localhost:8501`.
    color-cast, pose, and eyewear risks that patch bootstrap cannot observe.
 10. The target color is matched against the selected local catalog using CIEDE2000
    perceptual color distance in Lab space, with metadata affecting only close ties.
-11. Readiness incorporates post-match exact-SKU and shade-family stability.
+11. Capture readiness measures whether the photo and extracted tone are usable;
+    it remains separate from shade-specific evidence and sets a 93%, 75%, or
+    55% confidence ceiling for ready, caution, or provisional captures.
     Perceptually near-equivalent catalog colors are grouped so distinct shade
     families appear before duplicate-looking products in the Top 3.
 12. With multiple photos, each capture is analyzed independently; a weighted
     CIEDE2000 medoid rejects a gross whole-photo outlier and anchors consensus
     to a real retained observation.
-13. The app always shows visually distinct Top 3 candidates with readiness-aware
-    confidence, uncertainty diagnostics, and reasoning.
+13. The app always shows visually distinct Top 3 candidates. Candidate confidence
+    varies per shade using color fit, shade-family stability, and catalog evidence
+    beneath the global capture-readiness ceiling.
 
 ## Project Structure
 
@@ -111,8 +115,9 @@ image upload
 -> systematic capture uncertainty
 -> optional depth-safe foundation target adjustment
 -> CIEDE2000 shade matching with uncertainty and catalog evidence
--> post-match shade-family stability and readiness
--> Top 3 recommendations, readiness-aware confidence, and explanations
+-> post-match exact-product and shade-family stability
+-> capture readiness plus candidate-specific confidence
+-> Top 3 recommendations and explanations
 ```
 
 ## Multi-Capture Repeatability
@@ -120,7 +125,8 @@ image upload
 The Streamlit app accepts up to three face photos. Each photo runs through the
 complete pipeline independently. The consensus layer quality-weights the
 captures, chooses a real observed CIEDE2000 medoid, rejects a gross outlier only
-when there is enough evidence, and caps confidence when two captures disagree.
+when there is enough evidence, and lowers the capture-readiness ceiling when
+two captures disagree.
 
 For a small personal-photo repeatability check:
 

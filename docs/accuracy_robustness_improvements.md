@@ -22,8 +22,9 @@ adding a shade classifier or another face model.
   lightness, and catalog-quality terms can only resolve close candidates.
 - Catalog HEX values are never heuristically calibrated. Product type and
   metadata completeness describe evidence quality, not physical product color.
-- Readiness states always retain Top 3 recommendations while limiting
-  confidence for weak evidence.
+- Readiness states always retain Top 3 recommendations while setting a global
+  93%/75%/55% confidence ceiling. Candidate-specific scores vary below that
+  ceiling using color fit, shade-family stability, and catalog evidence.
 - Automatic correction is rejected when highlighted facial skin would be
   brightened by more than 3 L*, total skin lightness would shift by more than
   8 L*, or the extracted a*/b* undertone would shift by more than 7 units.

@@ -21,7 +21,7 @@ Build and validate **ShadeSense AI** as a working local Streamlit app first. Dep
 | Use shade catalog | Load catalog from CSV and normalize shade colors into RGB/Lab. | Mock catalog loads; real catalog can replace it with minimal schema mapping. |
 | Recommend best matching foundation shade | Compute perceptual color distance between extracted skin Lab and catalog shade Lab. | Lowest distance shade is ranked #1. |
 | Return Top 3 shades | Sort all shades and return first three. | UI always shows Top 3 unless catalog has fewer than 3 shades. |
-| Include confidence score | Combine distance score, region consistency, face quality, and top-match separation. | Each Top 3 item shows a confidence percentage. |
+| Include confidence score | Separate global capture readiness from per-shade evidence. Candidate confidence combines uncertainty-aware color fit, shade-family stability, and catalog evidence beneath a readiness ceiling. | Each Top 3 item shows a differentiated confidence percentage and evidence breakdown. |
 | Explain reasoning | Generate short deterministic explanation from distance, undertone/depth, and quality factors. | Each recommendation includes a readable reason. |
 | Prepare live demo | Not part of the current automated build. The local app should still show visual stages so a demo can be prepared later. | Current scope stops at a working local app. |
 | Explain approach, libraries, challenges, limitations | README + lightweight approach/limitations docs only. | No final demo script or submission packaging in this pass. |
@@ -33,7 +33,8 @@ Flawless does not mean perfect cosmetic matching under every possible real-world
 - The app runs without crashes.
 - The pipeline is explainable.
 - The output is visually inspectable.
-- The confidence score reflects uncertainty.
+- Capture readiness reflects input uncertainty, and candidate confidence reflects
+  shade-specific color fit, stability, and catalog evidence.
 - The implementation handles normal failure cases gracefully.
 - The README clearly explains limitations and production improvements.
 

@@ -1,0 +1,84 @@
+{
+  "source_folder": "cv_testpics",
+  "source_images_copied": false,
+  "catalog_warnings": [],
+  "summary": {
+    "images_requested": 7,
+    "images_succeeded": 7,
+    "candidates": 21,
+    "images_with_at_least_1pp_candidate_spread": 7,
+    "images_with_rank_confidence_inversion": 2,
+    "mean_candidate_spread": 0.09816060344483232,
+    "color_fit_candidate_evidence_correlation": 0.9417174508214626,
+    "color_fit_normalized_confidence_correlation": 0.9417174508214626,
+    "mean_absolute_candidate_evidence_minus_color_fit": 0.05679635296621202,
+    "catalog_evidence_unique_values": [
+      0.8,
+      0.9,
+      1.0
+    ],
+    "catalog_evidence_is_constant": false,
+    "stability_source_counts": {
+      "shade_family": 21
+    },
+    "all_confidences_respect_readiness_cap": true
+  },
+  "captures": [
+    {
+      "image": "Image_01_bright-close-no-glasses.jpeg",
+      "success": true,
+      "readiness_state": "caution",
+      "readiness_score": 63.04855203461639,
+      "readiness_cap": 0.6349888618047416,
+      "candidate_spread": 0.08116023818683549
+    },
+    {
+      "image": "Image_02_bright-front-glasses-reflections.jpeg",
+      "success": true,
+      "readiness_state": "caution",
+      "readiness_score": 68.03092386906862,
+      "readiness_cap": 0.6733147989928355,
+      "candidate_spread": 0.10500085630501843
+    },
+    {
+      "image": "Image_03_dimmer-lighting-glasses.jpeg",
+      "success": true,
+      "readiness_state": "provisional",
+      "readiness_score": 44.6803832028452,
+      "readiness_cap": 0.55,
+      "candidate_spread": 0.05283061229925229
+    },
+    {
+      "image": "Image_04_bright-angled-no-glasses.jpeg",
+      "success": true,
+      "readiness_state": "caution",
+      "readiness_score": 75.2971325669441,
+      "readiness_cap": 0.7292087120534162,
+      "candidate_spread": 0.10682457795185651
+    },
+    {
+      "image": "Image_05_dim-asymmetric-lighting-glasses.jpeg",
+      "success": true,
+      "readiness_state": "provisional",
+      "readiness_score": 42.096620881910646,
+      "readiness_cap": 0.55,
+      "candidate_spread": 0.1389718774448349
+    },
+    {
+      "image": "Image_06_reference-bright-front-no-glasses.jpeg",
+      "success": true,
+      "readiness_state": "caution",
+      "readiness_score": 71.26238280481557,
+      "readiness_cap": 0.6981721754216583,
+      "candidate_spread": 0.13977934423420402
+    },
+    {
+      "image": "Image_07_bright-close-glasses.jpeg",
+      "success": true,
+      "readiness_state": "caution",
+      "readiness_score": 58.623325657524,
+      "readiness_cap": 0.6009486589040308,
+      "candidate_spread": 0.06255671769182453
+    }
+  ]
+}

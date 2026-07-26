@@ -37,6 +37,10 @@ class ShadeMatch:
     source_url: str | None = None
     rank: int = 0
     confidence: float | None = None
+    candidate_confidence: float | None = None
+    color_fit_score: float | None = None
+    shade_family_stability_score: float | None = None
+    confidence_stability_source: str = "unavailable"
     confidence_breakdown: dict | None = None
     depth_penalty: float = 0.0
     ranking_score: float | None = None
