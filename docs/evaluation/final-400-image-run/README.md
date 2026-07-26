@@ -84,4 +84,3 @@ The local run produced additional per-image CSV/JSON records, an HTML explorer,
 and 369 face-overlay images. They are kept out of Git because the overlays
 contain dataset faces and redistribution may be restricted by source-dataset
 licenses.
-
