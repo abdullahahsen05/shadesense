@@ -12,5 +12,12 @@ outputs/*.log
 *.egg-info/
 .DS_Store
 Thumbs.db
+tmp/
 models/*.task
 data/public_catalog_raw/
+
+# Personal submission-preparation materials (kept local)
+docs/LOOM_DEMO_SCRIPT.md
+docs/TECHNICAL_INTERVIEW_GUIDE.md
+output/pdf/ShadeSense_AI_Technical_Interview_Guide.pdf
+scripts/build_interview_guide_pdf.py

@@ -1,205 +1,294 @@
+<div align="center">
+
 # ShadeSense AI
 
-ShadeSense AI is a local-first computer-vision app for foundation shade
-recommendation. It analyzes a facial image, extracts a robust skin-tone estimate
-from cheek, forehead, and jawline regions, and recommends the Top 3 closest
-foundation shades from a local catalog with capture readiness,
-candidate-specific confidence, and explanations.
+**Explainable computer vision for robust foundation shade shortlisting**
 
-## Status
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![MediaPipe](https://img.shields.io/badge/Vision-MediaPipe-00A67E)](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker)
+[![Matching](https://img.shields.io/badge/Matching-CIEDE2000-6C63FF)](https://en.wikipedia.org/wiki/Color_difference#CIEDE2000)
+[![Tests](https://img.shields.io/badge/tests-224%20passing-brightgreen)](#verification)
+[![Evaluation](https://img.shields.io/badge/evaluation-400%20images-blue)](#evaluation)
 
-Local working app only. No deployment, backend service, database, or auth in this
-build.
+</div>
 
-## Requirements
+ShadeSense AI is a local-first foundation recommendation system. It detects a
+face, isolates reliable skin regions, estimates visible skin color under
+imperfect capture conditions, and returns three visually distinct catalog
+shades with candidate-specific confidence and plain-language reasoning.
 
-- Python 3.10+ (tested on 3.12)
+The project deliberately uses an explainable computer-vision pipeline instead
+of a black-box shade classifier. Every recommendation can be traced back to
+facial regions, retained color patches, perceptual distance, uncertainty, and
+catalog evidence.
 
-## Setup
+## Assessment Outcomes
 
-```bash
+| Requirement | ShadeSense AI response |
+|---|---|
+| Recommend the best matching foundation shade | Ranks catalog candidates with distribution-aware CIEDE2000 distance in Lab color space. |
+| Return the Top 3 | Always presents three visually distinct shade families when matching succeeds. |
+| Include a confidence score for each recommendation | Computes candidate-specific heuristic confidence below a capture-readiness safety ceiling. |
+| Explain each recommendation | Shows color fit, stability, catalog evidence, included/excluded regions, and concise reasoning per result. |
+
+## Demo
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate      # Windows
-source .venv/bin/activate   # macOS/Linux
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python scripts/download_model.py   # fetches MediaPipe's face_landmarker.task (~3.7MB, one-time)
-```
-
-## Run
-
-```bash
+python scripts/download_model.py
 streamlit run app.py
 ```
 
-Then open the local URL Streamlit prints, usually `http://localhost:8501`.
+Open the local URL printed by Streamlit, normally
+`http://localhost:8501`. Upload one well-lit frontal face photograph, or two to
+three independent photographs for multi-photo consensus.
 
-## Usage
+## How It Works
 
-1. Upload one facial photo, or two to three independent photos for consensus.
-2. The app detects the face and MediaPipe face landmarks.
-3. Cheek, forehead, and side-jaw masks are extracted while avoiding eyes, lips,
-   eyebrows, hairline, central chin, and under-chin shadow where possible.
-4. Face-aware lighting diagnostics measure the actual forehead, cheek, and
-   side-jaw regions instead of the image background.
-5. A representative skin color is computed from adaptive diffuse patches using
-   a CIEDE2000 medoid, robust outlier rejection, and bounded region influence.
-6. Deterministic patch bootstrapping quantifies extraction uncertainty; central,
-   median, and 90th-percentile CIEDE2000 evidence all influence ranking.
-7. The app separates measured visible skin tone from foundation target tone when
-   glossy highlights could bias rich/deep skin recommendations too light.
-8. Six conservative exposure, white-balance, and gamma perturbations test whether
-   extraction and shade rankings remain stable under plausible capture variation.
-9. Capture-level uncertainty separately models global exposure, asymmetry,
-   color-cast, pose, and eyewear risks that patch bootstrap cannot observe.
-10. The target color is matched against the selected local catalog using CIEDE2000
-   perceptual color distance in Lab space, with metadata affecting only close ties.
-11. Capture readiness measures whether the photo and extracted tone are usable;
-    it remains separate from shade-specific evidence and sets a 93%, 75%, or
-    55% confidence ceiling for ready, caution, or provisional captures.
-    Perceptually near-equivalent catalog colors are grouped so distinct shade
-    families appear before duplicate-looking products in the Top 3.
-12. With multiple photos, each capture is analyzed independently; a weighted
-    CIEDE2000 medoid rejects a gross whole-photo outlier and anchors consensus
-    to a real retained observation.
-13. The app always shows visually distinct Top 3 candidates. Candidate confidence
-    varies per shade using color fit, shade-family stability, and catalog evidence
-    beneath the global capture-readiness ceiling.
+```mermaid
+flowchart LR
+    A["Image upload"] --> B["EXIF orientation and ICC-to-sRGB conversion"]
+    B --> C["MediaPipe face landmarks"]
+    C --> D["Forehead, cheek, and side-jaw masks"]
+    D --> E["Face-aware lighting and reliability checks"]
+    E --> F["Diffuse skin-pixel and adaptive patch filtering"]
+    F --> G["CIEDE2000 medoid and MAD outlier rejection"]
+    G --> H["96-sample stratified bootstrap"]
+    H --> I["Evidence-driven foundation target"]
+    I --> J["Distribution-aware catalog matching"]
+    J --> K["Top 3, confidence, and explanations"]
+```
+
+Key technical decisions:
+
+- **Facial evidence, not background brightness.** Exposure and color-cast
+  diagnostics operate on the forehead, cheeks, and jaw regions.
+- **Contamination-aware masks.** Eyes, brows, lips, nostrils, hairline, central
+  chin, and under-chin shadow are avoided; pose, glasses, reflections, facial
+  hair, and clipping can reduce or exclude a region.
+- **Observed-patch consensus.** An actual retained skin patch anchors the result.
+  Resolution-aware patches are compared with CIEDE2000, rejected using robust
+  median/MAD thresholds, and capped by region so one cheek cannot silently
+  dominate.
+- **Explicit uncertainty.** Deterministic stratified bootstrapping reports Lab
+  intervals, a 90th-percentile Delta E radius, and shade-family stability.
+- **Color-first ranking.** Raw CIEDE2000 remains dominant. Product type, depth,
+  and catalog quality can only influence close candidates.
+- **Safety-aware communication.** Capture readiness describes whether the photo
+  can support matching. Candidate confidence describes the evidence for each
+  recommended shade. Neither is presented as a calibrated probability.
+
+## Confidence Semantics
+
+Capture readiness and per-shade confidence answer different questions:
+
+1. **Capture readiness:** Can this photograph support a recommendation?
+2. **Candidate confidence:** How strong is the evidence for this particular
+   shade, given the capture ceiling?
+
+Candidate evidence uses the available signals with normalized weights:
+
+```text
+color_fit = exp(-distribution_aware_delta_e / 15)
+
+candidate_evidence =
+    65% color fit
+  + 25% shade-family Top-3 stability
+  + 10% catalog evidence
+
+candidate_confidence =
+    capture_readiness_cap * candidate_evidence
+```
+
+Missing evidence is omitted and the remaining weights are renormalized rather
+than silently replaced with zero. Readiness caps are at most 93% for `ready`,
+75% for `caution`, and 55% for `provisional` captures.
+
+## Evaluation
+
+### Frozen 400-image robustness benchmark
+
+The final run evaluated a deterministic manifest of **400 images**:
+
+- 250 images from MST-E, balanced at 25 images for each expert Monk Skin Tone;
+- 150 adult FairFace validation images;
+- no benchmark image was used to train or fine-tune the pipeline.
+
+| Metric | Final result |
+|---|---:|
+| Images evaluated | 400 |
+| Face detection / pipeline success | 92.25% |
+| Successful extractions | 369 |
+| Median extraction quality | 68.69 / 100 |
+| Median capture uncertainty | 6.66 Delta E |
+| 90th-percentile capture uncertainty | 15.43 Delta E |
+| Readiness distribution | 25 ready / 163 caution / 181 provisional / 31 unavailable |
+| Median processing time | 8.78 seconds per image |
+
+![Pipeline success by expert Monk Skin Tone](docs/evaluation/final-400-image-run/mste_success_by_tone.png)
+
+The benchmark covers every expert Monk Skin Tone level. The subgroup report
+also audits lighting, pose, age, gender, glasses, masks, and source dataset.
+Failure cases remain visible rather than being removed from the denominator.
+
+![Readiness distribution across the 400-image benchmark](docs/evaluation/final-400-image-run/readiness_distribution.png)
+
+The conservative readiness distribution is intentional: weak captures remain
+visible as `provisional` instead of receiving an unjustifiably confident shade.
+
+![Same-subject repeatability by lighting condition](docs/evaluation/final-400-image-run/repeatability_by_lighting.png)
+
+Same-subject repeatability exposes the remaining sensitivity to illumination.
+Poorly lit photographs show wider color variation, which is reflected in
+readiness warnings and lower confidence.
+
+### Multi-photo consensus
+
+On 19 MST-E identities with a held-out reference image:
+
+| Metric | Result |
+|---|---:|
+| Median individual-photo distance to reference | 21.26 Delta E |
+| Median consensus distance to reference | 11.24 Delta E |
+| Median improvement | 5.98 Delta E |
+| Subjects improved | 52.6% |
+
+The reference photograph was never included in consensus inputs. This evaluates
+repeatability, not physical foundation correctness.
+
+### Candidate-confidence validation
+
+A separate seven-photo real-capture audit produced 21 recommendations:
+
+- every image showed at least a one-percentage-point confidence spread;
+- mean Top-3 spread was 9.8 percentage points;
+- every confidence obeyed its readiness ceiling;
+- all stability evidence was computed at shade-family level;
+- catalog evidence varied across candidates instead of acting as a constant.
+
+This validates that confidence is candidate-specific rather than one repeated
+session score. Ranking remains color-first, so a lower-ranked shade can
+occasionally have slightly stronger stability without replacing the closer
+CIEDE2000 match.
+
+### How the evidence maps to the evaluation criteria
+
+| Evaluation criterion | Evidence in this project |
+|---|---|
+| Accuracy of shade recommendations | Lab/CIEDE2000 matching, distribution-aware distance, foundation-only default scope, uncertainty-aware lightness safeguards, and three distinct shade families. |
+| Robustness across skin tones and lighting | Frozen 400-image benchmark, all 10 expert Monk Skin Tone levels, FairFace cross-source images, lighting/pose/eyewear subgroups, readiness gating, and multi-photo consensus. |
+| AI and computer-vision approach | MediaPipe landmarks, facial masks, face-aware illumination analysis, adaptive skin filtering, perceptual medoid/MAD consensus, bootstrapping, and stability analysis. |
+| Problem-solving and technical decisions | Explicit fallbacks, contamination-driven region weighting, close-match-only metadata effects, product-type parsing, privacy-safe reporting, and honest failure accounting. |
+| Explanation and reasoning | Debug overlays, per-region evidence, included/excluded-region reasons, uncertainty diagnostics, confidence breakdowns, and concise recommendation explanations. |
+
+### What this evaluation does and does not prove
+
+The benchmark supports claims about **face detection, extraction coverage,
+subgroup behavior, uncertainty, capture readiness, and same-person
+repeatability**. It does **not** establish clinically calibrated color accuracy
+or real-world wear-test accuracy against physically measured foundation
+swatches. MST-E and FairFace do not contain verified matches to this exact
+product catalog, and public catalog HEX values are website-derived
+approximations.
+
+The complete GitHub-safe evidence package is in
+[`docs/evaluation/final-400-image-run`](docs/evaluation/final-400-image-run/README.md).
+It includes charts, aggregate JSON, subgroup CSV, and reproducibility notes.
+The full local run also generated 369 face-overlay images and per-image records;
+those are intentionally not committed because they contain dataset faces and
+may be subject to source-dataset licenses.
+
+## Shade Catalog
+
+`data/public_shade_catalog.csv` is the default catalog. It is built from public
+website-derived color records and normalized into a flexible schema. The UI
+defaults to genuine foundations; tints, BB/CC products, cushions, powders,
+sticks, and concealer hybrids can be included through product scope.
+
+```powershell
+python scripts/prepare_public_catalog.py
+```
+
+The small `data/shade_catalog_mock.csv` remains a development fallback. Catalog
+HEX values approximate online swatches and cannot calibrate physical
+foundation appearance, finish, oxidation, or camera rendering.
 
 ## Project Structure
 
 ```text
-shadesense-ai/
-app.py                 # Streamlit UI only
-requirements.txt
-data/
-  shade_catalog_mock.csv
-  public_shade_catalog.csv
-  sample_images/
-src/                   # CV and matching logic
-  face_detection.py
-  region_masks.py
-  color_correction.py
-  lighting_quality.py
-  image_quality.py
-  skin_extraction.py
-  extraction_quality.py
-  capture_uncertainty.py
-  multicapture_consensus.py
-  multi_photo_consensus.py
-  shade_catalog.py
-  shade_matcher.py
-  confidence.py
-  explanation.py
-  visualization.py
-scripts/
-  evaluate_dataset.py
-  evaluate_multi_photo.py
-  evaluate_repeatability.py
-  mask_audit_app.py
-  prepare_public_catalog.py
-tests/
-docs/
+app.py                                  Streamlit presentation layer
+src/analysis_pipeline.py                Shared app/evaluation pipeline
+src/face_detection.py                   MediaPipe detection and landmarks
+src/region_masks.py                     Forehead, cheek, and side-jaw masks
+src/skin_extraction.py                  Patch evidence and robust consensus
+src/capture_uncertainty.py              Systematic capture uncertainty
+src/shade_matcher.py                    CIEDE2000 catalog ranking
+src/confidence.py                       Candidate-confidence semantics
+src/multi_photo_consensus.py            Multi-capture aggregation
+scripts/evaluate_dataset.py             Frozen-manifest evaluation harness
+scripts/evaluate_multi_photo.py         Held-out repeatability evaluation
+docs/evaluation/                        GitHub-safe evaluation evidence
+tests/                                  Unit, regression, and Streamlit smoke tests
 ```
 
-## Core Pipeline
+## Reproduce the Evaluation
 
-```text
-image upload
--> embedded ICC conversion to sRGB
--> lighting and capture-quality diagnostics
--> MediaPipe face detection and landmarks
--> cheek / forehead / side-jaw masks
--> adaptive skin-pixel filtering
--> adaptive patch extraction and perceptual medoid consensus
--> deterministic bootstrap uncertainty
--> systematic capture uncertainty
--> optional depth-safe foundation target adjustment
--> CIEDE2000 shade matching with uncertainty and catalog evidence
--> post-match exact-product and shade-family stability
--> capture readiness plus candidate-specific confidence
--> Top 3 recommendations and explanations
+Dataset archives are not redistributed. After downloading the source datasets,
+build a frozen manifest and run the shared pipeline:
+
+```powershell
+python scripts/build_evaluation_manifest.py `
+  --datasets-root "C:\path\to\datasets" `
+  --output data/evaluation/benchmark_manifest.csv
+
+python scripts/evaluate_dataset.py `
+  --manifest data/evaluation/benchmark_manifest.csv `
+  --output outputs/evaluation/my-run `
+  --run-label my-run `
+  --resume
+
+python scripts/evaluate_multi_photo.py `
+  --results outputs/evaluation/my-run/per_image_results.csv `
+  --output outputs/evaluation/my-run/multi_photo
 ```
 
-## Multi-Capture Repeatability
+The app and harness both call `src.analysis_pipeline.analyze_rgb_image`, which
+prevents a separate, easier benchmark implementation from diverging from the
+demo path. See
+[`docs/evaluation_methodology.md`](docs/evaluation_methodology.md) for split,
+licensing, and metric details.
 
-The Streamlit app accepts up to three face photos. Each photo runs through the
-complete pipeline independently. The consensus layer quality-weights the
-captures, chooses a real observed CIEDE2000 medoid, rejects a gross outlier only
-when there is enough evidence, and lowers the capture-readiness ceiling when
-two captures disagree.
+## Verification
 
-For a small personal-photo repeatability check:
-
-```bash
-python scripts/evaluate_repeatability.py "C:\path\to\capture-folder" --pattern "Image_*.jpeg"
-```
-
-The evaluator does not copy or commit the photographs. It reports per-capture
-Lab estimates, low-signal/recapture flags, combined uncertainty, a weighted
-CIEDE2000 medoid, whole-photo outliers, and between-capture repeatability. The
-consensus uses an actual retained observation rather than synthesizing a skin
-color between incompatible captures.
-
-For the frozen MST-E benchmark, create held-out-reference multi-photo evidence
-after the main evaluation finishes:
-
-```bash
-python scripts/evaluate_multi_photo.py \
-  --results outputs/evaluation/baseline-v1/per_image_results.csv \
-  --output outputs/evaluation/baseline-v1/multi_photo
-```
-
-The designated reference photo is excluded from consensus inputs and is used
-only to measure repeatability.
-
-## Dataset Evaluation
-
-The frozen 400-image manifest contains 250 MST-E and 150 adult FairFace
-validation images. The harness calls the same shared analysis function as the
-app and saves restartable records, subgroup metrics, charts, Markdown, and HTML.
-See `docs/evaluation_methodology.md` for dataset licenses, split rules, commands,
-and the strict boundary between robustness evidence and physical product-match
-accuracy. The completed baseline/candidate measurements and presentation
-artifact index are recorded in `docs/evaluation_results.md`.
-
-## Shade Catalog
-
-`data/public_shade_catalog.csv` is the default catalog when present and valid.
-It is generated locally from downloaded public CSV files placed in
-`data/public_catalog_raw/`:
-
-```bash
-python scripts/prepare_public_catalog.py
-```
-
-`data/shade_catalog_mock.csv` remains available as a small development fallback
-catalog. The app lets you choose between the public and mock catalogs.
-
-Mock catalog schema:
-
-```csv
-shade_id,brand,shade_name,hex,r,g,b,undertone,depth,notes
-```
-
-Public catalog schema:
-
-```csv
-shade_id,brand,product,shade_name,hex,undertone,depth,source,source_url
-```
-
-See `docs/catalog_setup.md` for setup details and limitations. Public swatch
-colors are website-derived approximations, not guaranteed matches to real
-applied foundation.
-
-The app does not scrape Sephora, Kaggle, or any live website at runtime.
-
-## Tests
-
-```bash
-pytest tests/ -v
+```powershell
 python -m compileall src scripts app.py
+pytest tests/ -q
 ```
+
+Current verified state: **224 tests passing**, including color conversion,
+masks, face-aware lighting, robust extraction, bootstrapping, matching,
+readiness, candidate confidence, multi-photo consensus, evaluation reporting,
+and Streamlit smoke coverage.
 
 ## Known Limitations
 
-See `docs/limitations.md` for current pipeline limitations.
+- Web catalog colors are approximations rather than measured physical swatches.
+- Camera auto-exposure, white balance, HDR, beauty filters, makeup, and display
+  rendering can shift observed color.
+- Strong shadows, oblique pose, facial-hair contamination, masks, and reflective
+  eyewear can force a provisional result or prevent extraction.
+- Confidence is an evidence-based heuristic, not a probability that a shade
+  will match in person.
+- Physical accuracy requires a labeled validation set containing faces and
+  verified matches from the exact demonstration catalog.
+
+See [`docs/limitations.md`](docs/limitations.md) for the full boundary of the
+system's claims.
+
+## Privacy
+
+Analysis runs locally. The application does not upload photographs to a remote
+service, store user accounts, or scrape live product websites at runtime.

@@ -196,10 +196,9 @@ The comparison reports pipeline changes, readiness transitions, extracted Lab
 movement, and catalog Top-1 changes for the same image IDs. A product change is
 not labeled an accuracy improvement without physical product ground truth.
 
-## Neutral-card mode
+## Experimental color-reference code
 
-The optional app mode estimates bounded RGB channel gains from the evenly lit
-centre of a neutral gray-card reference taken with the same camera and light.
-The mode rejects dark, clipped, or highly nonuniform references. Public
-benchmarks do not include calibration cards, so this feature is verified with
-synthetic regression tests and must not be presented as dataset-measured gain.
+The repository retains a tested color-reference utility for future controlled
+experiments, but neutral-card calibration is not exposed in the application.
+The public benchmarks contain no calibration cards, so no evaluation result is
+attributed to that utility.
