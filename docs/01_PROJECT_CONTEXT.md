@@ -50,7 +50,8 @@ Later, the final demo can say:
 5. We convert both skin and shade catalog colors into Lab.
 6. We rank catalog shades using perceptual color distance.
 7. We return Top 3 recommendations because shade matching under uncontrolled lighting is uncertain.
-8. We reduce confidence when image quality or region agreement is poor.
+8. Poor image quality or region agreement lowers the global capture-readiness
+   ceiling; each candidate still varies below it using shade-specific evidence.
 
 ## App Name
 Use this name consistently:

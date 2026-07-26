@@ -30,7 +30,8 @@ def test_validation_report_template_exists_with_required_cases():
         "regions used",
         "regions excluded/down-weighted",
         "extraction quality",
-        "match confidence",
+        "capture readiness",
+        "candidate confidence",
         "top 3 shades",
         "visual mask quality",
         "result looks reasonable? yes/no",
@@ -58,9 +59,12 @@ def test_demo_talking_points_contains_variation_handling_section():
         "mild makeup",
         "jawline and forehead contamination",
         "color correction safeguard",
-        "extraction quality vs match confidence",
-        "separated image/extraction reliability from catalog match confidence",
-        "confidence reduction",
+        "capture readiness vs candidate confidence",
+        "separated photo/extraction",
+        "global readiness ceiling",
+        "65% color",
+        "25% shade-family stability",
+        "10% catalog evidence",
         "public catalog limitations",
         "camera processing",
         "white balance",
@@ -68,13 +72,29 @@ def test_demo_talking_points_contains_variation_handling_section():
         assert required_text in text
 
 
-def test_approach_explains_extraction_quality_and_match_confidence_are_separate():
+def test_approach_explains_readiness_and_candidate_confidence_are_separate():
     path = Path("docs/approach.md")
 
     assert path.exists()
     text = path.read_text(encoding="utf-8").casefold()
 
     assert "skin extraction quality score" in text
-    assert "match confidence" in text
+    assert "capture readiness" in text
+    assert "candidate confidence" in text
     assert "intentionally separate" in text
-    assert "input image is poor" in text
+    assert "93%, 75%, and 55%" in text
+
+
+def test_architecture_documents_candidate_confidence_formula_and_fallbacks():
+    path = Path("docs/02_TECHNICAL_ARCHITECTURE.md")
+
+    text = path.read_text(encoding="utf-8").casefold()
+
+    assert "color_fit = exp(-distribution_aware_delta_e / 15)" in text
+    assert "65% color_fit" in text
+    assert "25% candidate_stability" in text
+    assert "10% catalog_evidence" in text
+    assert "exact_product_fallback" in text
+    assert "missing factors are" in text
+    assert "never silently treated as zero" in text
+    assert "not calibrated" in text

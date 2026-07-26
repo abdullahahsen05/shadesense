@@ -5,7 +5,7 @@ actually tested locally with an authorized image.
 
 ## Manual Test Matrix
 
-| Case ID | Image Filename | Skin-Depth Group | Lighting Condition | Face Detected | Regions Used | Regions Excluded/Down-Weighted | Extraction Quality | Match Confidence | Top 3 Shades | Visual Mask Quality | Result Looks Reasonable? Yes/No | Notes |
+| Case ID | Image Filename | Skin-Depth Group | Lighting Condition | Face Detected | Regions Used | Regions Excluded/Down-Weighted | Extraction Quality | Capture Readiness | Candidate Confidence | Top 3 Shades | Visual Mask Quality | Result Looks Reasonable? Yes/No | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | V-001 |  | Fair | Daylight |  |  |  |  |  |  |  |  |  |
 | V-002 |  | Light | Daylight |  |  |  |  |  |  |  |  |  |
@@ -35,6 +35,6 @@ actually tested locally with an authorized image.
 - Extraction source:
 - Top 3 shades and Delta E:
 - Depth sanity notes:
-- Confidence breakdown per shade:
+- Candidate-confidence breakdown per shade:
 - Close-match tie shown?:
 - User-observed plausibility:

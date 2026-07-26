@@ -22,7 +22,8 @@ input image
 -> distribution-aware CIEDE2000 ranking using central, median, and tail distances,
    with close-tie-only depth, supported-lightness, and catalog-evidence adjustments
 -> Top 3 recommendations evaluated across bootstrap and lighting-sensitivity samples
--> readiness-aware Match confidence + deterministic explanation text
+-> global capture readiness + candidate-specific confidence
+-> deterministic explanation text
 ```
 
 No labeled training data or ML classifier is used for shade prediction. Every
@@ -30,14 +31,17 @@ step is deterministic and inspectable, which matters both because no labeled
 shade dataset exists and because it lets each recommendation be explained in
 plain language.
 
-Skin Extraction Quality and Match confidence are intentionally separate. Skin
-Extraction Quality asks, "is this extracted swatch reliable?" Match confidence
-asks, "does this reliable-or-unreliable swatch clearly match a catalog shade?"
-Keeping them separate prevents the app from sounding overly certain when the
-input image is poor.
+Skin Extraction Quality, Capture Readiness, and Candidate Confidence are
+intentionally separate:
 
-The readiness state is also separate. It does not hide recommendations:
-`ready`, `caution`, and `provisional` all return Top 3, but caution/provisional
-states cap confidence and explicitly request a better capture.
+- Skin Extraction Quality asks, "how reliable was the color extraction?"
+- Capture Readiness asks, "is this photo safe to use for recommendations?"
+- Candidate Confidence asks, "how strong is the evidence for this particular
+  shade within the capture's safety ceiling?"
+
+`ready`, `caution`, and `provisional` all return Top 3. Their confidence ceilings
+are 93%, 75%, and 55%, so a poor image cannot produce falsely strong candidate
+scores. Candidates still vary below that ceiling according to their own color
+fit, shade-family stability, and catalog evidence.
 
 See `docs/limitations.md` for known gaps in the current local build.

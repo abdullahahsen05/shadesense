@@ -139,13 +139,11 @@ def match_shades(
 
 ### `src/confidence.py`
 Responsibilities:
-- Convert distance into match score.
-- Apply penalties for poor image quality.
-- Apply penalties for region disagreement.
-- Apply penalties when Top 1 and Top 2 are too close.
-- Include patch-bootstrap uncertainty, lighting sensitivity, recommendation
-  stability, and catalog evidence.
-- Enforce readiness-specific confidence caps.
+- Convert distribution-aware Delta E into a candidate color-fit score.
+- Prefer Top-3 shade-family stability across bootstrap and lighting variations.
+- Mark exact-product stability explicitly when it must be used as a fallback.
+- Combine only available candidate evidence and normalize the remaining weights.
+- Apply the global capture-readiness ceiling without flattening candidates.
 
 Expected functions:
 
@@ -204,6 +202,10 @@ class ShadeMatch:
     lab: tuple[float, float, float]
     delta_e: float
     confidence: float
+    candidate_confidence: float
+    color_fit_score: float
+    shade_family_stability_score: float | None
+    confidence_stability_source: str
     recommendation_stability: float
     top3_stability: float
     catalog_quality_score: float
@@ -211,34 +213,62 @@ class ShadeMatch:
 ```
 
 ## Confidence Model
-Confidence should be understandable, not mathematically overcomplicated.
+Confidence deliberately separates one session-level property from three
+candidate-level properties.
 
-Current factors:
+Capture readiness measures whether the photo and extracted tone are usable. It
+absorbs lighting, face quality, region agreement, valid-pixel coverage, pose,
+eyewear, and extraction uncertainty. It sets the maximum candidate score:
+
+| Readiness | Maximum candidate confidence |
+|---|---:|
+| Ready | 93% |
+| Caution | 75% |
+| Provisional | 55% |
+
+Color fit uses the uncertainty-aware candidate distance:
 
 ```text
-match_distance_score          38%
-region_consistency            15%
-valid_pixel_ratio              8%
-lighting_quality               8%
-face_detection_quality         4%
-top_match_separation           7%
-extraction_uncertainty        10%
-recommendation_stability       7%
-catalog_quality                3%
+color_fit = exp(-distribution_aware_delta_e / 15)
 ```
 
-Confidence should decrease when:
-- Skin regions disagree strongly.
-- The image is too dark or too bright.
-- Too few valid pixels remain after filtering.
-- The face is small or partially occluded.
-- The best and second-best shade are almost tied.
-- Bootstrap samples produce unstable color or recommendation rankings.
-- Catalog metadata is incomplete.
+| Distribution-aware Delta E | Color fit |
+|---:|---:|
+| 0.4 | 97% |
+| 1 | 94% |
+| 2 | 88% |
+| 5 | 72% |
+| 10 | 51% |
 
-Ready recommendations are capped at 93%, caution recommendations at 75%, and
-provisional recommendations at 55%. These are heuristic engineering scores,
-not calibrated probabilities.
+Candidate stability prefers Top-3 shade-family stability so near-equivalent
+SKUs do not look unstable merely because they exchange positions:
+
+```text
+candidate_stability =
+    normalized(70% bootstrap Top-3 family stability
+             + 30% lighting Top-3 family stability)
+```
+
+If family stability is unavailable, the same combination of exact-product
+Top-3 signals is used and marked `exact_product_fallback`. Missing factors are
+omitted; they are never silently treated as zero.
+
+```text
+candidate_evidence =
+    normalized_available(
+        65% color_fit
+      + 25% candidate_stability
+      + 10% catalog_evidence
+    )
+
+candidate_confidence = readiness_cap * candidate_evidence
+```
+
+Raw CIEDE2000 remains the primary ranking signal. Candidate confidence describes
+the strength of evidence for each displayed item, so a lower-ranked shade may
+show slightly higher confidence when its shade family is materially more stable.
+These scores are transparent engineering heuristics, not calibrated
+probabilities of real-world shade satisfaction.
 
 ## Matching Algorithm
 Use Lab + CIEDE2000 if available through `skimage.color.deltaE_ciede2000`.
