@@ -136,6 +136,18 @@ def test_extraction_mode_controls_are_not_exposed_in_ui():
     assert "Force corrected extraction" not in page_text
 
 
+def test_per_region_quality_is_placed_beside_region_visuals():
+    source = Path("app.py").read_text(encoding="utf-8")
+
+    region_quality_position = source.index(
+        "        _render_region_quality(skin_result)"
+    )
+    extracted_tone_position = source.index(
+        '        st.subheader("Extracted Skin Tone")'
+    )
+    assert region_quality_position < extracted_tone_position
+
+
 def test_two_uploaded_photos_render_consensus_diagnostics():
     at = AppTest.from_file("app.py")
     at.run(timeout=30)

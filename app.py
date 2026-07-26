@@ -144,6 +144,41 @@ def _render_primary_result(
     st.markdown(guidance_cards_html(guidance), unsafe_allow_html=True)
 
 
+def _render_region_quality(skin_result) -> None:
+    """Keep region reliability beside the region visualizations it explains."""
+    with st.expander("Per-Region Quality"):
+        st.caption("Per-Region Quality")
+        quality_rows = []
+        for region_name in ["left_cheek", "right_cheek", "forehead", "jawline"]:
+            region = skin_result.region_results.get(region_name)
+            if region is None:
+                continue
+            reason_text = (
+                " ".join(region.quality_reasons[:2])
+                if region.quality_reasons
+                else region.status_reason or "No additional caveats."
+            )
+            warning_text = (
+                " ".join(region.quality_warnings[:2])
+                if region.quality_warnings
+                else "None"
+            )
+            quality_rows.append(
+                {
+                    "Region": region_name.replace("_", " ").title(),
+                    "Score": f"{region.quality_score:.0f}/100",
+                    "Label": region.quality_label,
+                    "Role": region.role,
+                    "Reason": reason_text,
+                    "Warnings": warning_text,
+                }
+            )
+        if quality_rows:
+            st.table(quality_rows)
+        else:
+            st.caption("No per-region quality diagnostics available.")
+
+
 st.markdown(
     """
     <div class="ss-kicker">Computer vision · foundation matching</div>
@@ -481,6 +516,8 @@ if uploaded_files:
                 if pixel_count == 0:
                     st.caption("No usable pixels in this region.")
 
+        _render_region_quality(skin_result)
+
         st.subheader("Extracted Skin Tone")
         swatch_col, detail_col = st.columns([1, 2])
         with swatch_col:
@@ -600,31 +637,6 @@ if uploaded_files:
 
         st.subheader("Skin Extraction Summary")
         st.caption(build_skin_extraction_summary(skin_result, lighting_quality, extraction_selection))
-
-        with st.expander("Per-Region Quality"):
-            st.caption("Per-Region Quality")
-            region_order = ["left_cheek", "right_cheek", "forehead", "jawline"]
-            quality_rows = []
-            for region_name in region_order:
-                region = skin_result.region_results.get(region_name)
-                if region is None:
-                    continue
-                reason_text = " ".join(region.quality_reasons[:2]) if region.quality_reasons else region.status_reason or "No additional caveats."
-                warning_text = " ".join(region.quality_warnings[:2]) if region.quality_warnings else "None"
-                quality_rows.append(
-                    {
-                        "Region": region_name.replace("_", " ").title(),
-                        "Score": f"{region.quality_score:.0f}/100",
-                        "Label": region.quality_label,
-                        "Role": region.role,
-                        "Reason": reason_text,
-                        "Warnings": warning_text,
-                    }
-                )
-            if quality_rows:
-                st.table(quality_rows)
-            else:
-                st.caption("No per-region quality diagnostics available.")
 
         with st.expander("Color Correction Diagnostics"):
             st.caption("Color Correction Diagnostics")
