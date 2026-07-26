@@ -12,5 +12,6 @@ outputs/*.log
 *.egg-info/
 .DS_Store
 Thumbs.db
+tmp/
 models/*.task
 data/public_catalog_raw/

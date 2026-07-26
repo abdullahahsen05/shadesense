@@ -1,0 +1,12 @@
+{
+  "any_capture_exclusion_rate": 0.8947368421052632,
+  "low_signal_exclusion_rate": 0.8421052631578947,
+  "median_consensus_to_reference_delta_e": 11.235697029938999,
+  "median_improvement_delta_e": 5.977949885958672,
+  "median_individual_to_reference_delta_e": 21.263062042660458,
+  "method_note": "Consensus inputs exclude each subject's designated usable reference; the reference is used only for repeatability scoring.",
+  "p90_consensus_to_reference_delta_e": 39.87355214767914,
+  "perceptual_outlier_exclusion_rate": 0.7368421052631579,
+  "subject_count": 19,
+  "subjects_improved_rate": 0.5263157894736842
+}

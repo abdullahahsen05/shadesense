@@ -1,0 +1,51 @@
+{
+  "capture_uncertainty_delta_e": {
+    "count": 369,
+    "mean": 8.244854145463087,
+    "median": 6.658860146074155,
+    "p90": 15.431376364782437
+  },
+  "extraction_quality": {
+    "count": 369,
+    "mean": 65.31767958557678,
+    "median": 68.6866400910171,
+    "p90": 79.04113158679117
+  },
+  "face_detection_rate": 0.9225,
+  "image_count": 400,
+  "metadata_label_readiness": {
+    "clear_label_count": 157,
+    "false_ready_rate": 0.029411764705882353,
+    "false_usable_rate": 0.5,
+    "recapture_reject_rate": 0.5,
+    "usable_accept_rate": 0.4909090909090909,
+    "usable_ready_rate": 0.01818181818181818
+  },
+  "pipeline_success_rate": 0.9225,
+  "processing_seconds": {
+    "count": 400,
+    "mean": 7.778832798749981,
+    "median": 8.778720899999826,
+    "p90": 10.899987800000236
+  },
+  "readiness_distribution": {
+    "caution": 163,
+    "provisional": 181,
+    "ready": 25,
+    "unavailable": 31
+  },
+  "repeatability": {
+    "delta_e_to_reference": {
+      "count": 230,
+      "mean": 20.928086924687953,
+      "median": 19.610555238364324,
+      "p90": 42.516681920763276
+    },
+    "subjects_with_evaluation_reference": 19
+  },
+  "top_recommendation_product_types": {
+    "foundation": 320,
+    "powder": 26,
+    "stick": 23
+  }
+}
