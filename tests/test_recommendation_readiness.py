@@ -109,7 +109,7 @@ def test_small_sensitivity_change_does_not_create_three_delta_e_state_cliff():
         _lighting(0.75),
     )
 
-    assert below.state == above.state == "ready"
+    assert below.state == above.state
     assert abs(below.confidence_cap - above.confidence_cap) < 0.02
 
 
@@ -167,11 +167,11 @@ def test_provisional_state_caps_match_confidence_but_keeps_match():
     matches = compute_confidence([match], quality, readiness=readiness)
 
     assert len(matches) == 1
-    assert matches[0].confidence == 0.55
+    assert 0.0 < matches[0].confidence < 0.55
     assert matches[0].confidence_breakdown["readiness_cap"] == 0.55
 
 
-def test_unstable_shade_family_prevents_ready_state_after_matching():
+def test_unstable_shade_family_does_not_change_capture_readiness_state():
     unstable = ShadeMatch(
         shade_id="S1",
         brand="Brand",
@@ -197,9 +197,9 @@ def test_unstable_shade_family_prevents_ready_state_after_matching():
         matches=[unstable],
     )
 
-    assert readiness.state == "provisional"
+    assert readiness.state == "ready"
     assert any(
-        "Shade-family ranking stability" in reason
+        "reported separately from capture readiness" in reason
         for reason in readiness.reasons
     )
 

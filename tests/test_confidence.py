@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from src.confidence import (
@@ -6,6 +8,7 @@ from src.confidence import (
     QualityReport,
     build_quality_report,
     compute_confidence,
+    delta_e_to_color_fit,
 )
 from src.explanation import build_explanation
 from src.shade_matcher import ShadeMatch
@@ -100,15 +103,86 @@ def test_confidence_uses_distribution_aware_distance_when_available():
     assert uncertain_result.confidence_breakdown["distribution_delta_e"] == 9.0
 
 
-def test_poor_region_consistency_lowers_confidence():
+def test_color_fit_mapping_uses_documented_exponential_scale():
+    assert delta_e_to_color_fit(0.0) == 1.0
+    assert delta_e_to_color_fit(1.0) == np.exp(-1.0 / 15.0)
+    assert delta_e_to_color_fit(2.0) == np.exp(-2.0 / 15.0)
+    assert delta_e_to_color_fit(10.0) == np.exp(-10.0 / 15.0)
+
+
+def test_same_color_fit_with_different_family_stability_is_differentiated():
+    stable = _match(3.0)
+    stable.top3_family_stability = 1.0
+    stable.lighting_top3_family_stability = 0.9
+    fragile = _match(3.0)
+    fragile.top3_family_stability = 0.35
+    fragile.lighting_top3_family_stability = 0.20
+    quality = QualityReport(1.0, 1.0, 1.0, 1.0)
+
+    stable, fragile = compute_confidence([stable, fragile], quality)
+
+    assert stable.color_fit_score == fragile.color_fit_score
+    assert stable.shade_family_stability_score > fragile.shade_family_stability_score
+    assert stable.candidate_confidence > fragile.candidate_confidence
+    assert stable.confidence_stability_source == "shade_family"
+
+
+def test_exact_product_stability_is_an_explicit_fallback():
+    match = _match(3.0)
+    match.top3_stability = 0.8
+    match.lighting_top3_stability = 0.5
+    result = compute_confidence(
+        [match],
+        QualityReport(1.0, 1.0, 1.0, 1.0),
+    )[0]
+
+    assert result.confidence_stability_source == "exact_product_fallback"
+    assert result.shade_family_stability_score == 0.7 * 0.8 + 0.3 * 0.5
+
+
+def test_missing_evidence_is_omitted_and_remaining_weights_are_normalized():
+    match = _match(3.0)
+    match.catalog_quality_score = None
+    result = compute_confidence(
+        [match],
+        QualityReport(1.0, 1.0, 1.0, 1.0),
+    )[0]
+
+    weights = result.confidence_breakdown["normalized_weights"]
+    assert weights == {"color_fit": 1.0}
+    assert result.confidence_breakdown["candidate_evidence"] == result.color_fit_score
+
+
+def test_readiness_cap_scales_candidates_without_flattening_them():
+    closer = _match(1.0)
+    farther = _match(8.0)
+    for match in (closer, farther):
+        match.top3_family_stability = 0.8
+        match.lighting_top3_family_stability = 0.8
+        match.catalog_quality_score = 1.0
+    provisional = SimpleNamespace(confidence_cap=0.55)
+
+    closer, farther = compute_confidence(
+        [closer, farther],
+        QualityReport(1.0, 1.0, 1.0, 1.0),
+        readiness=provisional,
+    )
+
+    assert closer.candidate_confidence <= 0.55
+    assert farther.candidate_confidence <= 0.55
+    assert closer.candidate_confidence > farther.candidate_confidence
+    assert closer.candidate_confidence != 0.55
+
+
+def test_capture_quality_does_not_directly_change_candidate_confidence():
     good_qr = QualityReport(region_consistency=1.0, valid_pixel_ratio=0.8, face_quality=1.0, top_match_separation=0.8)
     bad_qr = QualityReport(region_consistency=0.1, valid_pixel_ratio=0.8, face_quality=1.0, top_match_separation=0.8)
     good = compute_confidence([_match(5.0)], good_qr)[0]
     bad = compute_confidence([_match(5.0)], bad_qr)[0]
-    assert bad.confidence < good.confidence
+    assert bad.confidence == good.confidence
 
 
-def test_close_top_matches_lower_confidence_via_separation():
+def test_top_match_separation_is_not_mixed_into_candidate_confidence():
     matches_close = [_match(5.0), _match(5.1)]
     matches_far = [_match(5.0), _match(15.0)]
     qr_close = build_quality_report(
@@ -119,7 +193,7 @@ def test_close_top_matches_lower_confidence_via_separation():
     )
     conf_close = compute_confidence([_match(5.0)], qr_close)[0].confidence
     conf_far = compute_confidence([_match(5.0)], qr_far)[0].confidence
-    assert conf_close < conf_far
+    assert conf_close == conf_far
 
 
 def test_face_quality_penalized_for_multi_face_and_small_face():
@@ -130,7 +204,7 @@ def test_face_quality_penalized_for_multi_face_and_small_face():
     assert qr_multi.face_quality < qr_clean.face_quality
 
 
-def test_asymmetric_cheek_area_warns_and_slightly_penalizes_confidence():
+def test_asymmetric_cheek_area_warns_but_belongs_to_capture_readiness():
     matches = [_match(5.0), _match(9.0)]
     balanced_qr = build_quality_report(
         FakeSkinResult(0.9, 0.9, cheek_area_balance=1.0), FakeFaceResult([]), matches
@@ -140,11 +214,11 @@ def test_asymmetric_cheek_area_warns_and_slightly_penalizes_confidence():
     )
     balanced = compute_confidence([_match(5.0)], balanced_qr)[0]
     imbalanced = compute_confidence([_match(5.0)], imbalanced_qr)[0]
-    assert imbalanced.confidence < balanced.confidence
+    assert imbalanced.confidence == balanced.confidence
     assert any("cheek" in w.lower() for w in imbalanced_qr.warnings)
 
 
-def test_region_stability_lowers_confidence_slightly():
+def test_region_stability_is_reported_without_direct_candidate_penalty():
     matches = [_match(5.0), _match(9.0)]
     stable_qr = build_quality_report(
         FakeSkinResult(0.9, 0.9, stability_score=95.0), FakeFaceResult([]), matches
@@ -155,12 +229,11 @@ def test_region_stability_lowers_confidence_slightly():
     stable = compute_confidence([_match(5.0)], stable_qr)[0]
     unstable = compute_confidence([_match(5.0)], unstable_qr)[0]
 
-    assert unstable.confidence < stable.confidence
-    assert unstable.confidence_breakdown["region_stability_penalty"] > stable.confidence_breakdown["region_stability_penalty"]
+    assert unstable.confidence == stable.confidence
     assert any("region stability" in warning.lower() for warning in unstable_qr.warnings)
 
 
-def test_highlight_influence_lowers_confidence_slightly():
+def test_highlight_influence_is_reported_without_direct_candidate_penalty():
     matches = [_match(5.0), _match(9.0)]
     clean_skin = FakeSkinResult(0.9, 0.9)
     highlighted_skin = FakeSkinResult(0.9, 0.9)
@@ -173,8 +246,7 @@ def test_highlight_influence_lowers_confidence_slightly():
     clean = compute_confidence([_match(5.0)], clean_qr)[0]
     highlighted = compute_confidence([_match(5.0)], highlighted_qr)[0]
 
-    assert highlighted.confidence < clean.confidence
-    assert highlighted.confidence_breakdown["highlight_safety_penalty"] > 0
+    assert highlighted.confidence == clean.confidence
     assert any("highlight influence" in warning.lower() for warning in highlighted_qr.warnings)
 
 
@@ -188,7 +260,7 @@ def test_close_match_tie_warning_and_explanation_wording():
     assert "equivalent candidates" in text
 
 
-def test_lighting_quality_lowers_confidence_slightly_and_breakdown_fields_exist():
+def test_lighting_quality_is_separated_from_candidate_breakdown():
     matches = [_match(5.0), _match(9.0)]
     good_qr = build_quality_report(
         FakeSkinResult(0.9, 0.9), FakeFaceResult([]), matches, FakeLighting(1.0)
@@ -198,19 +270,21 @@ def test_lighting_quality_lowers_confidence_slightly_and_breakdown_fields_exist(
     )
     good = compute_confidence([_match(5.0)], good_qr)[0]
     poor = compute_confidence([_match(5.0)], poor_qr)[0]
-    assert poor.confidence < good.confidence
+    assert poor.confidence == good.confidence
     assert "dim" in poor_qr.warnings
     expected = {
-        "color_distance_contribution",
-        "region_consistency_contribution",
-        "valid_pixel_patch_contribution",
-        "lighting_quality_contribution",
-        "top_shade_separation_contribution",
+        "candidate_evidence",
+        "candidate_confidence",
+        "color_fit_score",
+        "shade_family_stability_score",
+        "catalog_evidence_score",
+        "normalized_weights",
+        "readiness_cap",
     }
     assert expected <= set(poor.confidence_breakdown)
 
 
-def test_lighting_sensitivity_lowers_confidence_and_adds_warning():
+def test_lighting_sensitivity_warning_is_kept_for_capture_readiness():
     matches = [_match(5.0), _match(9.0)]
     stable_skin = FakeSkinResult(0.9, 0.9)
     stable_skin.lighting_sensitivity_diagnostics = {
@@ -232,11 +306,7 @@ def test_lighting_sensitivity_lowers_confidence_and_adds_warning():
     stable = compute_confidence([_match(5.0)], stable_report)[0]
     sensitive = compute_confidence([_match(5.0)], sensitive_report)[0]
 
-    assert sensitive.confidence < stable.confidence
-    assert (
-        sensitive.confidence_breakdown["lighting_sensitivity_penalty"]
-        > stable.confidence_breakdown["lighting_sensitivity_penalty"]
-    )
+    assert sensitive.confidence == stable.confidence
     assert any(
         "simulated exposure" in warning.lower()
         for warning in sensitive_report.warnings

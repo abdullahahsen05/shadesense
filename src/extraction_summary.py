@@ -72,9 +72,9 @@ def build_skin_extraction_summary(skin_result, lighting_quality, extraction_sele
 
     confidence_reason = "the trusted regions were consistent"
     if getattr(skin_result, "region_consistency", 1.0) < 0.55:
-        confidence_reason = "region colors disagreed, so confidence is reduced"
+        confidence_reason = "region colors disagreed, so capture readiness is reduced"
     elif getattr(skin_result, "usable_region_count", 0) < 3:
-        confidence_reason = "fewer than three regions were usable, so confidence is reduced"
+        confidence_reason = "fewer than three regions were usable, so capture readiness is reduced"
     elif reduced:
         confidence_reason = "some regions were reduced due to reliability checks"
 

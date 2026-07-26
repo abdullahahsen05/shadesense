@@ -31,6 +31,26 @@ def build_explanation(
         f"This shade is {_closeness_phrase(match.delta_e)} to the extracted skin tone "
         f"(Delta E {match.delta_e:.1f} using CIEDE2000 on cheek/forehead/jawline color)."
     )
+    if getattr(match, "color_fit_score", None) is not None:
+        stability = getattr(match, "shade_family_stability_score", None)
+        stability_text = (
+            f"{stability:.0%} shade-family stability"
+            if stability is not None
+            else "stability unavailable"
+        )
+        parts.append(
+            f"Its candidate evidence includes {match.color_fit_score:.0%} color fit, "
+            f"{stability_text}, and "
+            f"{getattr(match, 'catalog_quality_score', 0.5):.0%} catalog evidence."
+        )
+        if (
+            getattr(match, "confidence_stability_source", "")
+            == "exact_product_fallback"
+        ):
+            parts.append(
+                "Exact-product Top-3 stability was used as an explicit fallback "
+                "because shade-family stability was unavailable."
+            )
 
     if match.undertone:
         parts.append(f"Its listed undertone is {match.undertone}.")
@@ -58,30 +78,32 @@ def build_explanation(
 
     if getattr(match, "catalog_quality_score", 1.0) < 0.75:
         parts.append(
-            "Catalog metadata for this candidate is limited, so its confidence is reduced."
+            "Catalog metadata for this candidate is limited, so its candidate "
+            "confidence is reduced."
         )
 
     if quality_report.region_consistency < 0.5:
         parts.append(
-            "Confidence is reduced because the forehead, cheek, and jawline regions "
-            "did not agree closely in color (possible uneven lighting, shadows, or occlusion)."
+            "Capture readiness is reduced because the forehead, cheek, and jawline "
+            "regions did not agree closely in color (possible uneven lighting, "
+            "shadows, or occlusion)."
         )
 
     if quality_report.valid_pixel_ratio < 0.5:
         parts.append(
-            "Fewer valid skin pixels than ideal survived filtering, adding some uncertainty."
+            "Fewer valid skin pixels than ideal survived filtering, reducing capture readiness."
         )
 
     if quality_report.face_quality < 0.8:
         parts.append(
             "Face detection quality was reduced (e.g. a small or multiply-detected face), "
-            "which adds some uncertainty."
+            "which reduces capture readiness."
         )
 
     if getattr(quality_report, "cheek_area_balance", 1.0) < 0.45:
         parts.append(
-            "One cheek contributed much less valid skin area than the other, so confidence "
-            "is reduced slightly."
+            "One cheek contributed much less valid skin area than the other, so capture "
+            "readiness is reduced slightly."
         )
 
     if getattr(quality_report, "uncertainty_radius", 0.0) > 6.0:

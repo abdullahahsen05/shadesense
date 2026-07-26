@@ -257,6 +257,16 @@ def recommendation_records(manifest_row: pd.Series, analysis) -> list[dict]:
                 "distribution_delta_e": _finite(
                     match.distribution_delta_e
                 ),
+                "candidate_confidence": _finite(
+                    match.candidate_confidence
+                ),
+                "color_fit_score": _finite(match.color_fit_score),
+                "candidate_stability_score": _finite(
+                    match.shade_family_stability_score
+                ),
+                "confidence_stability_source": (
+                    match.confidence_stability_source
+                ),
                 "confidence": _finite(match.confidence),
                 "catalog_quality_score": _finite(
                     match.catalog_quality_score
