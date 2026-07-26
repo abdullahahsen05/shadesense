@@ -25,6 +25,7 @@ from src.shade_catalog import (
 )
 from src.ui_presentation import (
     APP_STYLES,
+    build_region_decision_guidance,
     build_user_guidance,
     guidance_cards_html,
     readiness_display,
@@ -135,11 +136,27 @@ def _render_primary_result(
                     f"{match.undertone or 'unknown undertone'}"
                 )
 
-    guidance = build_user_guidance(
+    capture_guidance = build_user_guidance(
         readiness.state,
         warning_groups,
-        max_cards=3,
+        max_cards=4,
     )
+    region_guidance = build_region_decision_guidance(
+        skin_result.region_results
+    )
+    guidance = []
+    if capture_guidance and capture_guidance[0].category == "Next step":
+        guidance.append(capture_guidance.pop(0))
+    guidance.extend(region_guidance)
+    guidance.extend(
+        card
+        for card in capture_guidance
+        if not (
+            region_guidance
+            and card.category == "Skin evidence"
+        )
+    )
+    guidance = guidance[:4]
     st.subheader("What to know about this result")
     st.markdown(guidance_cards_html(guidance), unsafe_allow_html=True)
 

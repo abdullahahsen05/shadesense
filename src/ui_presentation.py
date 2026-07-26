@@ -472,6 +472,67 @@ def build_user_guidance(
     return cards[: max(1, max_cards)]
 
 
+def build_region_decision_guidance(
+    region_results: Mapping[str, object],
+) -> list[GuidanceCard]:
+    """Explain region exclusion and weighting decisions in user-facing language."""
+    excluded_details: list[str] = []
+    reduced_details: list[str] = []
+
+    for region_name, region in region_results.items():
+        label = region_name.replace("_", " ").title()
+        excluded = bool(getattr(region, "excluded", False))
+        weight = float(getattr(region, "weight_multiplier", 1.0))
+        if excluded:
+            reason = (
+                getattr(region, "exclusion_reason", None)
+                or getattr(region, "status_reason", None)
+                or "it did not provide reliable skin evidence"
+            )
+            excluded_details.append(f"{label}: {str(reason).strip()}")
+        elif weight < 0.995:
+            reason = (
+                getattr(region, "downweight_reason", None)
+                or getattr(region, "status_reason", None)
+                or "its evidence was less reliable than the other regions"
+            )
+            reduced_details.append(
+                f"{label} retained {max(0.0, weight):.0%} influence: "
+                f"{str(reason).strip()}"
+            )
+
+    cards: list[GuidanceCard] = []
+    if excluded_details:
+        count = len(excluded_details)
+        cards.append(
+            GuidanceCard(
+                category="Region decision",
+                title=(
+                    "One facial region was excluded"
+                    if count == 1
+                    else f"{count} facial regions were excluded"
+                ),
+                message=" ".join(excluded_details),
+                tone="caution",
+            )
+        )
+    if reduced_details:
+        count = len(reduced_details)
+        cards.append(
+            GuidanceCard(
+                category="Region decision",
+                title=(
+                    "One region had reduced influence"
+                    if count == 1
+                    else f"{count} regions had reduced influence"
+                ),
+                message=" ".join(reduced_details),
+                tone="info",
+            )
+        )
+    return cards
+
+
 def guidance_cards_html(cards: Sequence[GuidanceCard]) -> str:
     """Render guidance cards as a compact responsive grid."""
     items = []

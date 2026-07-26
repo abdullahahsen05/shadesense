@@ -97,6 +97,9 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Usable perturbations:" in page_text
     assert "Your shade shortlist" in page_text
     assert "What to know about this result" in page_text
+    assert "One facial region was excluded" in page_text
+    assert "One region had reduced influence" in page_text
+    assert "retained 12% influence" in page_text
     assert "Visual evidence" in page_text
     assert "Technical evidence for evaluators" in page_text
     assert "Detailed recommendation evidence" in page_text
