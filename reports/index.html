@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Public evaluation reports for ShadeSense AI.">
+  <title>ShadeSense AI — Evaluation Reports</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #201d1b;
+      --muted: #6d6560;
+      --paper: #f5f0ea;
+      --card: #fffdfa;
+      --line: #ded5cd;
+      --accent: #8a554c;
+      --sage: #60766a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(145deg, #faf7f3, var(--paper));
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      line-height: 1.55;
+    }
+    main, footer {
+      width: min(1080px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+    header {
+      padding: 84px 0 56px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 760px;
+      margin: 0;
+      font-family: Georgia, serif;
+      font-size: clamp(2.8rem, 7vw, 5.6rem);
+      font-weight: 500;
+      letter-spacing: -.055em;
+      line-height: .96;
+    }
+    .lede {
+      max-width: 710px;
+      margin: 26px 0 0;
+      color: var(--muted);
+      font-size: 1.06rem;
+    }
+    .headline-metrics {
+      margin: 40px 0 0;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+      background: rgba(255, 253, 250, .75);
+    }
+    .headline-metrics div {
+      padding: 20px;
+      border-left: 1px solid var(--line);
+    }
+    .headline-metrics div:first-child { border-left: 0; }
+    .headline-metrics strong, .headline-metrics span { display: block; }
+    .headline-metrics strong {
+      font-family: Georgia, serif;
+      font-size: 1.6rem;
+      font-weight: 500;
+    }
+    .headline-metrics span {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: .76rem;
+    }
+    .reports {
+      padding: 64px 0;
+      display: grid;
+      gap: 16px;
+    }
+    article {
+      padding: 28px;
+      display: grid;
+      grid-template-columns: 110px 1fr auto;
+      gap: 26px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--card);
+      box-shadow: 0 18px 50px rgba(70, 51, 43, .06);
+    }
+    article.featured { border-color: rgba(96, 118, 106, .55); }
+    .run-label {
+      color: var(--accent);
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    article h2 {
+      margin: 0 0 7px;
+      font-family: Georgia, serif;
+      font-size: 1.55rem;
+      font-weight: 500;
+    }
+    article p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .88rem;
+    }
+    .stats {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .stats span {
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: #f1ebe5;
+      color: #5d5550;
+      font-size: .7rem;
+    }
+    .open {
+      padding: 11px 16px;
+      border-radius: 10px;
+      background: var(--ink);
+      color: white;
+      font-size: .82rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .open:hover { background: var(--accent); }
+    .scope {
+      margin: 0 0 70px;
+      padding: 30px;
+      border-left: 4px solid var(--sage);
+      background: rgba(255, 253, 250, .7);
+    }
+    .scope h2 { margin-top: 0; font-family: Georgia, serif; font-weight: 500; }
+    .scope p { margin-bottom: 0; color: var(--muted); }
+    footer {
+      padding: 30px 0 50px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .78rem;
+    }
+    footer a { color: var(--accent); }
+    @media (max-width: 720px) {
+      header { padding-top: 56px; }
+      .headline-metrics { grid-template-columns: 1fr 1fr; }
+      .headline-metrics div:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
+      .headline-metrics div:nth-child(4) { border-top: 1px solid var(--line); }
+      article { grid-template-columns: 1fr; gap: 14px; }
+      .open { justify-self: start; }
+      footer { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">ShadeSense AI · Reproducible evidence</p>
+      <h1>Evaluation reports</h1>
+      <p class="lede">
+        Frozen benchmark outputs from the same computer-vision pipeline used by
+        the local application. Reports preserve failures in the denominator and
+        separate robustness evidence from physical foundation-match accuracy.
+      </p>
+      <div class="headline-metrics" aria-label="Final benchmark summary">
+        <div><strong>400</strong><span>frozen images</span></div>
+        <div><strong>92.25%</strong><span>pipeline success</span></div>
+        <div><strong>68.69</strong><span>median extraction quality</span></div>
+        <div><strong>6.66 ΔE</strong><span>median capture uncertainty</span></div>
+      </div>
+    </header>
+
+    <section class="reports" aria-label="Available evaluation reports">
+      <article class="featured">
+        <div class="run-label">Final run</div>
+        <div>
+          <h2>Frozen 400-image benchmark</h2>
+          <p>
+            Final master pipeline across MST-E and FairFace, including all ten
+            expert Monk Skin Tone groups, lighting subgroups, readiness, and
+            repeatability.
+          </p>
+          <div class="stats">
+            <span>369 successful extractions</span>
+            <span>25 ready</span>
+            <span>163 caution</span>
+            <span>181 provisional</span>
+          </div>
+        </div>
+        <a class="open" href="final-400-image-run/report.html">Open report →</a>
+      </article>
+
+      <article>
+        <div class="run-label">Revision 2</div>
+        <div>
+          <h2>Color and catalog revision</h2>
+          <p>
+            Intermediate 400-image run after catalog scope, exposure, and
+            extraction changes. Retained to make iteration measurable.
+          </p>
+          <div class="stats">
+            <span>92.25% pipeline success</span>
+            <span>67.05 median extraction quality</span>
+          </div>
+        </div>
+        <a class="open" href="v2-color-catalog/report.html">Open report →</a>
+      </article>
+
+      <article>
+        <div class="run-label">Baseline</div>
+        <div>
+          <h2>Original frozen baseline</h2>
+          <p>
+            The pre-improvement reference run. Publishing it alongside the final
+            report prevents selective reporting of only the strongest result.
+          </p>
+          <div class="stats">
+            <span>89.25% pipeline success</span>
+            <span>65.90 median extraction quality</span>
+          </div>
+        </div>
+        <a class="open" href="baseline-v1/report.html">Open report →</a>
+      </article>
+    </section>
+
+    <section class="scope">
+      <h2>Interpretation boundary</h2>
+      <p>
+        These datasets do not contain verified foundation matches from the
+        demonstration catalog. The reports support claims about face detection,
+        extraction coverage, subgroup behavior, uncertainty, readiness, and
+        repeatability—not physical wear-test or clinical color accuracy. Aggregate
+        charts are public; dataset face overlays are intentionally excluded for
+        privacy and source-license reasons.
+      </p>
+    </section>
+  </main>
+  <footer>
+    <span>Generated by the deterministic ShadeSense evaluation harness.</span>
+    <a href="https://github.com/abdullahahsen05/shadesense">Repository and methodology ↗</a>
+  </footer>
+</body>
+</html>
