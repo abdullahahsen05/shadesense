@@ -10,6 +10,7 @@
 [![Matching](https://img.shields.io/badge/Matching-CIEDE2000-6C63FF)](https://en.wikipedia.org/wiki/Color_difference#CIEDE2000)
 [![Tests](https://img.shields.io/badge/tests-224%20passing-brightgreen)](#verification)
 [![Evaluation](https://img.shields.io/badge/evaluation-400%20images-blue)](#evaluation)
+[![Live reports](https://img.shields.io/badge/reports-GitHub%20Pages-8A554C)](https://abdullahahsen05.github.io/shadesense/reports/)
 
 </div>
 
@@ -185,6 +186,10 @@ than silently replaced with zero. Readiness caps are at most 93% for `ready`,
 
 ## Evaluation
 
+**[Open the public evaluation report site](https://abdullahahsen05.github.io/shadesense/reports/)**
+· [Final 400-image HTML report](https://abdullahahsen05.github.io/shadesense/reports/final-400-image-run/report.html)
+· [Versioned report files](reports/)
+
 ### Frozen 400-image robustness benchmark
 
 The final run evaluated a deterministic manifest of **400 images**:
@@ -270,9 +275,12 @@ swatches. MST-E and FairFace do not contain verified matches to this exact
 product catalog, and public catalog HEX values are website-derived
 approximations.
 
-The complete GitHub-safe evidence package is in
+The complete GitHub-safe evidence package is available as
+clickable [public HTML reports](https://abdullahahsen05.github.io/shadesense/reports/)
+and in
 [`docs/evaluation/final-400-image-run`](docs/evaluation/final-400-image-run/README.md).
-It includes charts, aggregate JSON, subgroup CSV, and reproducibility notes.
+The final report package includes its charts, aggregate JSON, subgroup CSV, and
+reproducibility notes.
 The full local run also generated 369 face-overlay images and per-image records;
 those are intentionally not committed because they contain dataset faces and
 may be subject to source-dataset licenses.
