@@ -81,6 +81,82 @@ Key technical decisions:
   can support matching. Candidate confidence describes the evidence for each
   recommended shade. Neither is presented as a calibrated probability.
 
+## Robustness and Failure Handling
+
+ShadeSense does not treat every detected face or skin-colored pixel as equally
+trustworthy. Each risk is detected, mitigated, and reflected in the result:
+
+| Capture challenge | Detection | Mitigation | Effect on the result |
+|---|---|---|---|
+| Bright or dark background | Lighting is measured again after facial masks exist | Forehead, cheek, and side-jaw pixels replace whole-image statistics | The background does not decide whether face lighting is safe |
+| Uneven face lighting | Left/right cheek gap, central/lower-face gap, regional shadows, clipping, and luminance spread | Shadowed regions lose influence; valid darker pixels are retained | Readiness and uncertainty worsen when the two sides cannot corroborate one another |
+| Glossy or specular highlights | Low-saturation bright pixels, clipped patches, local contrast, and highlight ratios | Affected patches are rejected and glossy regions are downweighted | Shine cannot silently make the extracted tone or foundation target too light |
+| Glasses and lens reflections | Per-eye reflection evidence plus dark/edged bridge evidence | Upper-cheek pixels underneath and beside detected lenses are excluded | Eyewear risk is reported and capture readiness is reduced |
+| Angled pose | Landmark asymmetry and visible cheek area | The foreshortened cheek is reduced instead of averaging both cheeks equally | A poorly visible cheek cannot dominate the estimate |
+| Region disagreement | Forehead and jaw colors are compared with the cheek anchor using CIEDE2000 | A contaminated forehead may be excluded; an unsupported jaw becomes diagnostic-only | Included, excluded, and reduced-weight regions are shown with reasons |
+| Makeup, facial hair, or local occlusion | Valid-pixel ratio, local color variation, stable-patch evidence, and cheek disagreement | Suspect patches or regions are rejected or downweighted | The result relies on the remaining independently supported regions |
+| Low facial color signal | Face-region shadow, black clipping, exposure, usable area, and extraction stability | Recommendation readiness is forced to `provisional` | Top 3 remain visible, confidence is capped at 55%, and recapture is recommended |
+
+The order of operations is intentional:
+
+```text
+global lighting check
+-> provisional conservative correction for landmark stability
+-> face landmarks and masks
+-> face-region lighting analysis
+-> final conservative correction
+-> robust patch extraction
+```
+
+The nose is deliberately excluded because it is a curved central highlight zone
+with frequent redness and nostril shadow. Cheeks are the primary evidence;
+forehead and side jaw provide independent support. The side jaw is preferred to
+the full central chin because the under-lip and under-chin areas are commonly
+affected by facial hair, expression, contour, and cast shadow.
+
+## How the Top 3 Shades Are Selected
+
+The final recommendation is not a nearest-HEX lookup:
+
+1. The measured visible tone and any evidence-supported foundation target are
+   converted to Lab.
+2. Every in-scope catalog shade is compared with CIEDE2000.
+3. Ranking combines the central distance with the median and 90th-percentile
+   distances across patch-bootstrap and conservative lighting variations. This
+   favors a shade that stays close, not one that wins only for a single point
+   estimate.
+4. Depth, an uncertainty-aware too-light safeguard, product type, and catalog
+   quality may adjust only candidates inside a close-color window. They cannot
+   move a clearly worse CIEDE2000 match ahead of a clearly better one.
+5. Duplicate variants of the same product/shade are grouped.
+6. Perceptually close colors across products form a **shade family**. The
+   best-ranked representative of each family is considered before another
+   near-duplicate from a family already shown.
+7. The display selector progressively enforces perceptual separation so the
+   Top 3 provide useful alternatives rather than three nearly identical catalog
+   entries.
+
+### Exact-product stability versus shade-family stability
+
+The app reports two related but different signals:
+
+- **Exact-product stability** asks how often the same catalog SKU remains in
+  Top 1 or Top 3 across patch-bootstrap and lighting variations.
+- **Shade-family stability** asks how often that SKU, or a perceptually
+  near-equivalent shade, remains represented in Top 1 or Top 3.
+
+An exact shade can therefore have **low exact-product stability but high family
+stability**. This happens when tiny plausible changes in extracted Lab cause
+several nearly identical catalog SKUs to exchange positions. The precise product
+is ambiguous, but the underlying color neighborhood is stable.
+
+That distinction prevents catalog duplication from making a sound color-family
+recommendation look unreliable. Candidate confidence prefers Top-3
+shade-family stability, while color fit remains the dominant factor and capture
+readiness remains the ceiling. High family stability does not claim that one
+named SKU is physically proven correct; it says that the recommended color
+family is robust to the measured uncertainty.
+
 ## Confidence Semantics
 
 Capture readiness and per-shade confidence answer different questions:
