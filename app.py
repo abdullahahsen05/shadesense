@@ -865,7 +865,16 @@ if uploaded_files:
                         st.caption(f"Shadow patches rejected: {region.shadow_patches_rejected}")
                         st.caption(f"Shadow/highlight ratio: {region.shadow_highlight_ratio:.0%}")
                         if region_name == "jawline":
-                            if region.weight_multiplier < 1.0:
+                            st.caption(
+                                "Facial-hair texture score: "
+                                f"{region.facial_hair_score:.2f}"
+                            )
+                            if region.excluded:
+                                st.caption(
+                                    "Side-jaw exclusion reason: "
+                                    f"{region.exclusion_reason}"
+                                )
+                            elif region.weight_multiplier < 1.0:
                                 st.caption(
                                     "Side-jaw reduction reason: "
                                     f"{region.downweight_reason}"

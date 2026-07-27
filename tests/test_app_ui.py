@@ -58,7 +58,8 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "internal region/pixel score" in page_text
     assert "Stability summary:" in page_text
     assert (
-        "Side-jaw reduction reason:" in page_text
+        "Side-jaw exclusion reason:" in page_text
+        or "Side-jaw reduction reason:" in page_text
         or "Side-jaw status:" in page_text
     )
     assert "Final depth estimate:" in page_text
@@ -101,9 +102,18 @@ def test_region_color_diagnostics_are_rendered_for_uploaded_face():
     assert "Shade-family stability" in page_text
     assert "Capture readiness is reported separately" in page_text
     assert "What to know about this result" in page_text
-    assert "One facial region was excluded" in page_text
-    assert "One region had reduced influence" in page_text
-    assert "retained 12% influence" in page_text
+    assert (
+        "One facial region was excluded" in page_text
+        or "facial regions were excluded" in page_text
+    )
+    assert (
+        "One region had reduced influence" in page_text
+        or "Dense facial-hair texture was detected" in page_text
+    )
+    assert (
+        "retained 12% influence" in page_text
+        or "excluded from skin-color consensus" in page_text
+    )
     assert "Visual evidence" in page_text
     assert "Technical evidence for evaluators" in page_text
     assert "Detailed recommendation evidence" in page_text

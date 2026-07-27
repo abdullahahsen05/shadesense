@@ -215,6 +215,44 @@ def test_jawline_downweighted_when_contains_shadow_patches():
     assert jawline.downweight_reason is not None
     assert "chin/neck shadow, contour, occlusion, or uneven lighting" in jawline.downweight_reason
     assert "facial hair" not in jawline.downweight_reason.lower()
+    assert jawline.facial_hair_detected is False
+    assert jawline.excluded is False
+
+
+def test_dense_beard_texture_excludes_jawline_from_color_and_depth_evidence():
+    image, masks = _synthetic_scene(
+        forehead_rgb=SIMILAR_FOREHEAD_RGB,
+        left_cheek_rgb=CHEEK_RGB,
+        right_cheek_rgb=CHEEK_RGB,
+        jawline_rgb=(175, 135, 110),
+    )
+    y_grid, x_grid = np.indices((20, 100))
+    dense_stubble = ((x_grid % 5) <= 1) | (((x_grid + 2 * y_grid) % 11) == 0)
+    jaw_pixels = image[60:80, :]
+    jaw_pixels[dense_stubble] = (45, 32, 27)
+
+    skin = extract_skin_tone(image, masks)
+    jawline = skin.region_results["jawline"]
+
+    assert jawline.facial_hair_detected is True
+    assert jawline.facial_hair_score >= 0.48
+    assert jawline.excluded is True
+    assert jawline.weight_multiplier == 0.0
+    assert jawline.role == "excluded"
+    assert jawline.quality_label == "excluded"
+    assert jawline.exclusion_reason is not None
+    assert "dense facial-hair texture" in jawline.exclusion_reason.lower()
+    assert "skin-color consensus" in jawline.exclusion_reason.lower()
+    assert "jawline" not in [name.lower() for name in skin.included_region_names]
+    assert "jawline" in skin.excluded_region_names
+    assert skin.patch_voting_diagnostics["region_contributions"].get(
+        "jawline",
+        0.0,
+    ) == 0.0
+    assert "jawline" not in skin.foundation_target_diagnostics.get(
+        "lower_face_regions",
+        [],
+    )
 
 
 def test_off_undertone_jawline_is_diagnostic_only_even_without_large_variance():
@@ -539,6 +577,8 @@ def test_valid_darker_jawline_with_low_variance_is_not_heavily_downweighted():
     jawline = skin.region_results["jawline"]
     assert jawline.weight_multiplier >= 0.75
     assert jawline.downweight_reason is None
+    assert jawline.facial_hair_detected is False
+    assert jawline.excluded is False
     assert any("jawline/lower-cheek patches supported" in r.lower() for r in skin.extraction_quality_reasons)
 
 

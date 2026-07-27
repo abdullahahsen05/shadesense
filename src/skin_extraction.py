@@ -51,6 +51,10 @@ JAWLINE_LOW_VALID_RATIO = 0.45
 JAWLINE_CHEEK_SUPPORT_DELTA_E = 8.0
 JAWLINE_CHEEK_UNDERTONE_SUPPORT = 6.0
 JAWLINE_UNSUPPORTED_WEIGHT = 0.12
+JAWLINE_FACIAL_HAIR_EXCLUDE_SCORE = 0.48
+JAWLINE_FACIAL_HAIR_REDUCE_SCORE = 0.28
+JAWLINE_TEXTURE_EXCESS_FLOOR = 0.04
+JAWLINE_DARK_STRAND_EXCESS_FLOOR = 0.035
 
 # Forehead is useful but optional: if it disagrees strongly with the cheek
 # tone (full Lab distance), it is excluded outright — likely hair/fringe or
@@ -119,6 +123,10 @@ class RegionSkinResult:
     highlight_patches_rejected: int = 0
     shadow_patches_rejected: int = 0
     midtone_patch_count: int = 0
+    texture_edge_density: float = 0.0
+    dark_strand_ratio: float = 0.0
+    facial_hair_score: float = 0.0
+    facial_hair_detected: bool = False
     quality_score: float = 0.0
     quality_label: str = "excluded"
     role: str = "excluded"
@@ -402,6 +410,52 @@ def _stable_patch_medians(
     return rgb_medians, lab_medians, len(selected), stats
 
 
+def _region_hair_texture_metrics(
+    image_rgb: np.ndarray,
+    mask: np.ndarray,
+) -> tuple[float, float]:
+    """Measure fine dark-line texture without using absolute skin darkness.
+
+    Beard stubble produces repeated dark local residuals and edges inside a
+    jaw mask. Smooth naturally deep skin can have low luminance while keeping
+    both ratios low, so these metrics are later compared with the same
+    subject's cheeks rather than evaluated as absolute color thresholds.
+    """
+    if image_rgb is None or image_rgb.size == 0 or mask is None:
+        return 0.0, 0.0
+    mask_u8 = (np.asarray(mask) > 0).astype(np.uint8) * 255
+    if np.count_nonzero(mask_u8) < MIN_VALID_PIXELS_PER_REGION:
+        return 0.0, 0.0
+
+    # Erode once so the polygon boundary itself is not mistaken for hair.
+    interior = cv2.erode(mask_u8, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    interior_bool = interior > 0
+    if np.count_nonzero(interior_bool) < MIN_VALID_PIXELS_PER_REGION:
+        interior_bool = mask_u8 > 0
+
+    gray = cv2.cvtColor(np.asarray(image_rgb, dtype=np.uint8), cv2.COLOR_RGB2GRAY)
+    gray_float = gray.astype(np.float32)
+    local_mean = cv2.GaussianBlur(gray_float, (0, 0), sigmaX=1.25)
+    dark_residual = local_mean - gray_float
+    local_luma = float(np.median(gray_float[interior_bool]))
+    dark_threshold = max(4.0, 0.035 * max(local_luma, 30.0))
+    dark_strand_ratio = float(
+        np.mean(dark_residual[interior_bool] > dark_threshold)
+    )
+
+    grad_x = cv2.Sobel(gray_float, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray_float, cv2.CV_32F, 0, 1, ksize=3)
+    gradient = cv2.magnitude(grad_x, grad_y)
+    gradient_threshold = max(18.0, 0.14 * max(local_luma, 30.0))
+    edge_density = float(
+        np.mean(gradient[interior_bool] > gradient_threshold)
+    )
+    return (
+        float(np.clip(edge_density, 0.0, 1.0)),
+        float(np.clip(dark_strand_ratio, 0.0, 1.0)),
+    )
+
+
 def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> RegionSkinResult:
     warnings: list = []
     pixels = image_rgb[mask > 0]
@@ -447,6 +501,10 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
     makeup_influence_detected = (
         name in CHEEK_NAMES and makeup_ratio >= MAKEUP_INFLUENCE_RATIO
     ) or highlight_ratio >= HIGHLIGHT_INFLUENCE_RATIO
+    texture_edge_density, dark_strand_ratio = _region_hair_texture_metrics(
+        image_rgb,
+        mask,
+    )
 
     if valid_count < MIN_VALID_PIXELS_PER_REGION:
         warnings.append(
@@ -530,6 +588,8 @@ def _extract_region(image_rgb: np.ndarray, mask: np.ndarray, name: str) -> Regio
         highlight_patches_rejected=patch_stats["highlight_patches_rejected"],
         shadow_patches_rejected=patch_stats["shadow_patches_rejected"],
         midtone_patch_count=patch_stats["midtone_patch_count"],
+        texture_edge_density=texture_edge_density,
+        dark_strand_ratio=dark_strand_ratio,
         patch_evidence=patch_stats["patch_evidence"] if not patch_fallback_used else [],
         warnings=warnings,
     )
@@ -619,6 +679,86 @@ def _jawline_cheek_support(
     )
 
 
+def _jawline_facial_hair_evidence(
+    jawline: RegionSkinResult,
+    reliable_by_name: dict,
+) -> tuple[float, bool]:
+    """Score repeated beard-like texture relative to the subject's cheeks.
+
+    Absolute darkness is intentionally not a signal. Dense facial hair should
+    add both fine edges and repeated dark local residuals beyond what appears
+    in the same capture's cheeks. Requiring both signals protects smooth,
+    naturally deeper jaw skin and broad illumination shadows from exclusion.
+    """
+    cheeks = [
+        reliable_by_name[name]
+        for name in CHEEK_NAMES
+        if name in reliable_by_name
+    ]
+    if not cheeks:
+        return 0.0, False
+
+    cheek_edge_density = float(
+        np.median([cheek.texture_edge_density for cheek in cheeks])
+    )
+    cheek_dark_strand_ratio = float(
+        np.median([cheek.dark_strand_ratio for cheek in cheeks])
+    )
+    edge_excess = max(jawline.texture_edge_density - cheek_edge_density, 0.0)
+    strand_excess = max(
+        jawline.dark_strand_ratio - cheek_dark_strand_ratio,
+        0.0,
+    )
+    edge_signal = float(
+        np.clip(
+            (edge_excess - JAWLINE_TEXTURE_EXCESS_FLOOR) / 0.18,
+            0.0,
+            1.0,
+        )
+    )
+    strand_signal = float(
+        np.clip(
+            (strand_excess - JAWLINE_DARK_STRAND_EXCESS_FLOOR) / 0.14,
+            0.0,
+            1.0,
+        )
+    )
+
+    _, nearest_cheek_delta, _ = _jawline_cheek_support(
+        jawline,
+        reliable_by_name,
+    )
+    color_disagreement = (
+        0.0
+        if not np.isfinite(nearest_cheek_delta)
+        else float(np.clip((nearest_cheek_delta - 5.0) / 12.0, 0.0, 1.0))
+    )
+    patch_scarcity = float(
+        np.clip(
+            (2.0 - min(jawline.stable_patch_count, jawline.midtone_patch_count))
+            / 2.0,
+            0.0,
+            1.0,
+        )
+    )
+    score = float(
+        np.clip(
+            0.45 * strand_signal
+            + 0.35 * edge_signal
+            + 0.10 * color_disagreement
+            + 0.10 * patch_scarcity,
+            0.0,
+            1.0,
+        )
+    )
+    detected = (
+        score >= JAWLINE_FACIAL_HAIR_EXCLUDE_SCORE
+        and edge_signal >= 0.30
+        and strand_signal >= 0.30
+    )
+    return score, detected
+
+
 def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     """Mutate forehead/jawline RegionSkinResults in place against the cheek
     anchor color, and return any resulting warning strings.
@@ -688,11 +828,29 @@ def _apply_forehead_and_jawline_rules(reliable_by_name: dict) -> list:
     if jawline is not None:
         delta_e = _lab_distance(jawline.median_lab, anchor_lab)
         darkness_gap = anchor_lab[0] - jawline.median_lab[0]
-        contamination_concern = _jawline_has_contamination_concern(jawline)
         cheek_supported, nearest_cheek_delta, undertone_delta = (
             _jawline_cheek_support(jawline, reliable_by_name)
         )
-        if contamination_concern or not cheek_supported:
+        facial_hair_score, facial_hair_detected = _jawline_facial_hair_evidence(
+            jawline,
+            reliable_by_name,
+        )
+        jawline.facial_hair_score = facial_hair_score
+        jawline.facial_hair_detected = facial_hair_detected
+        contamination_concern = _jawline_has_contamination_concern(jawline)
+
+        if facial_hair_detected:
+            jawline.excluded = True
+            jawline.weight_multiplier = 0.0
+            jawline.downweight_reason = None
+            jawline.exclusion_reason = (
+                "Dense facial-hair texture was detected inside the side-jaw "
+                f"region (facial-hair score {facial_hair_score:.2f}). The "
+                "jawline was excluded from skin-color consensus and "
+                "foundation-depth evidence rather than treated as darker skin."
+            )
+            warnings.append(jawline.exclusion_reason)
+        elif contamination_concern or not cheek_supported:
             jawline.weight_multiplier = min(
                 jawline.weight_multiplier,
                 JAWLINE_UNSUPPORTED_WEIGHT,
@@ -807,6 +965,7 @@ def _jawline_has_contamination_concern(jawline: RegionSkinResult) -> bool:
         or patch_lightness_span > 8.0
         or jawline.reliability_score < REGION_RELIABILITY_THRESHOLD
         or jawline.specular_highlight_detected
+        or jawline.facial_hair_score >= JAWLINE_FACIAL_HAIR_REDUCE_SCORE
     )
 
 
@@ -910,7 +1069,15 @@ def _assign_region_quality(region_results: dict, reliable_by_name: dict) -> None
             if region.name in CHEEK_NAMES:
                 reasons.append("Primary cheek region for undertone and shade matching.")
             elif region.name == JAWLINE_NAME:
-                if region.weight_multiplier >= 0.75 and not region.excluded:
+                reasons.append(
+                    f"Facial-hair texture score {region.facial_hair_score:.2f}."
+                )
+                if region.excluded and region.facial_hair_detected:
+                    reasons.append(
+                        "Jawline was excluded because dense facial-hair texture "
+                        "contaminated the side-jaw evidence."
+                    )
+                elif region.weight_multiplier >= 0.75 and not region.excluded:
                     reasons.append("Jawline/lower-cheek area supports shade depth when clean.")
                 else:
                     reasons.append(
