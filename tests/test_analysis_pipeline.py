@@ -55,6 +55,32 @@ def test_shared_pipeline_returns_graceful_no_face_result():
     assert result.error
     assert result.masks == {}
     assert result.matches == []
+    assert result.input_validation["human_subject"]["code"] == "no_human_face"
+
+
+def test_shared_pipeline_rejects_blank_image_before_face_detection():
+    image_rgb = np.full((400, 400, 3), 128, dtype=np.uint8)
+
+    result = analyze_rgb_image(image_rgb)
+
+    assert not result.success
+    assert result.input_validation["content"]["code"] == "blank_or_uniform_image"
+    assert result.input_validation["human_subject"] is None
+    assert "blank" in result.error.lower()
+
+
+def test_shared_pipeline_rejects_multiple_people_as_ambiguous():
+    image_rgb = np.asarray(open_rgb_image(SAMPLES / "multi_face.png"))
+
+    result = analyze_rgb_image(image_rgb)
+
+    assert not result.success
+    assert result.face_result.face_count >= 2
+    assert (
+        result.input_validation["human_subject"]["code"]
+        == "multiple_human_faces"
+    )
+    assert "exactly one" in result.error.lower()
 
 
 def test_analysis_resolution_is_bounded_without_changing_aspect_ratio():

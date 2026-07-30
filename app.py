@@ -331,26 +331,58 @@ if uploaded_files:
 
     decoded_images = []
     analyses = []
+    rejected_uploads = []
     with st.spinner(f"Analysing {len(uploaded_files)} photo(s)..."):
         for uploaded_file in uploaded_files:
-            decoded_image, color_metadata = open_rgb_image_with_metadata(
-                uploaded_file
-            )
+            try:
+                decoded_image, color_metadata = open_rgb_image_with_metadata(
+                    uploaded_file
+                )
+            except (OSError, ValueError) as exc:
+                rejected_uploads.append(
+                    (
+                        uploaded_file.name,
+                        "The file could not be decoded as a supported image "
+                        f"({type(exc).__name__}).",
+                    )
+                )
+                continue
             original_rgb = np.asarray(decoded_image)
             metadata = color_metadata.as_dict()
             metadata["neutral_card_calibrated"] = False
+            image_analysis = analyze_rgb_image(
+                original_rgb,
+                recommendation_catalog_df,
+                extraction_mode=extraction_mode,
+                top_k=TOP_K_SHADES,
+                image_color_metadata=metadata,
+            )
+            if not image_analysis.face_result.success:
+                rejected_uploads.append(
+                    (
+                        uploaded_file.name,
+                        image_analysis.error
+                        or image_analysis.face_result.error
+                        or "The upload did not pass human-portrait validation.",
+                    )
+                )
+                continue
             decoded_images.append(
                 (decoded_image, original_rgb, color_metadata, uploaded_file.name)
             )
-            analyses.append(
-                analyze_rgb_image(
-                    original_rgb,
-                    recommendation_catalog_df,
-                    extraction_mode=extraction_mode,
-                    top_k=TOP_K_SHADES,
-                    image_color_metadata=metadata,
-                )
-            )
+            analyses.append(image_analysis)
+
+    if rejected_uploads:
+        st.subheader("Upload validation")
+        for filename, reason in rejected_uploads:
+            st.error(f"{filename}: {reason}")
+
+    if not analyses:
+        st.info(
+            "No valid portrait is available for analysis. Upload one clear photo "
+            "containing exactly one human face."
+        )
+        st.stop()
 
     consensus_result = (
         build_multi_photo_consensus(

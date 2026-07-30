@@ -23,8 +23,9 @@ from src.confidence import build_quality_report, compute_confidence
 from src.config import TOP_K_SHADES
 from src.extraction_quality import build_extraction_quality_report
 from src.extraction_selection import run_dual_extraction
-from src.face_detection import detect_face_landmarks
+from src.face_detection import FaceDetectionResult, detect_face_landmarks
 from src.image_quality import analyze_image_quality
+from src.input_validation import validate_human_subject, validate_image_content
 from src.lighting_quality import analyze_lighting_quality
 from src.lighting_sensitivity import analyze_lighting_sensitivity
 from src.recommendation_readiness import build_recommendation_readiness
@@ -46,6 +47,7 @@ class ImageAnalysisResult:
     face_result: Any
     global_lighting_quality: Any
     provisional_corrected_rgb: np.ndarray
+    input_validation: dict = field(default_factory=dict)
     provisional_image_quality: Any = None
     masks: dict[str, np.ndarray] = field(default_factory=dict)
     mask_capture_diagnostics: dict = field(default_factory=dict)
@@ -107,7 +109,34 @@ def analyze_rgb_image(
             images are downscaled with area resampling before CV analysis.
         image_color_metadata: Diagnostics supplied by the image decoder.
     """
-    source_shape = tuple(np.asarray(image_rgb).shape)
+    image_rgb = np.asarray(image_rgb)
+    source_shape = tuple(image_rgb.shape)
+    content_validation = validate_image_content(image_rgb)
+    if not content_validation.valid:
+        face = FaceDetectionResult(
+            success=False,
+            landmarks=None,
+            face_count=0,
+            image_shape=source_shape,
+            error=content_validation.message,
+        )
+        return ImageAnalysisResult(
+            success=False,
+            image_rgb=image_rgb,
+            source_shape=source_shape,
+            analysis_scale=1.0,
+            image_color_metadata=dict(image_color_metadata or {}),
+            face_result=face,
+            global_lighting_quality=None,
+            provisional_corrected_rgb=image_rgb,
+            input_validation={
+                "content": content_validation.as_dict(),
+                "human_subject": None,
+            },
+            visualization_rgb=image_rgb,
+            error=content_validation.message,
+        )
+
     image_rgb, analysis_scale = normalize_analysis_resolution(
         image_rgb,
         max_analysis_side,
@@ -118,6 +147,14 @@ def analyze_rgb_image(
         **correction_settings_for_lighting(global_lighting),
     )
     face = detect_face_landmarks(provisional_corrected)
+    subject_validation = validate_human_subject(face, image_rgb.shape)
+    validation_diagnostics = {
+        "content": content_validation.as_dict(),
+        "human_subject": subject_validation.as_dict(),
+    }
+    if not subject_validation.valid:
+        face.success = False
+        face.error = subject_validation.message
     result = ImageAnalysisResult(
         success=False,
         image_rgb=image_rgb,
@@ -127,6 +164,7 @@ def analyze_rgb_image(
         face_result=face,
         global_lighting_quality=global_lighting,
         provisional_corrected_rgb=provisional_corrected,
+        input_validation=validation_diagnostics,
         visualization_rgb=image_rgb,
         error=face.error if not face.success else None,
     )
